@@ -372,7 +372,12 @@ class QueueManager(object):
     def prepend(self,h5file):
         if not self.is_in_queue(h5file):
             self._model.insertRow(0,QStandardItem(h5file))
-    
+
+    @inmain_decorator(True)
+    def prepend_second_position(self,h5file):
+        if not self.is_in_queue(h5file):
+            self._model.insertRow(1,QStandardItem(h5file))
+
     def process_request(self,h5_filepath):
         # check connection table
         try:

@@ -26,7 +26,7 @@ from qtutils import UiLoader
 from blacs import BLACS_DIR
 from blacs.tab_base_classes import Tab, Worker, define_state
 from blacs.tab_base_classes import MODE_MANUAL, MODE_TRANSITION_TO_BUFFERED, MODE_TRANSITION_TO_MANUAL, MODE_BUFFERED
-from blacs.output_classes import AO, DO, DDS, Image
+from blacs.output_classes import AI, AO, DO, DDS, Image
 from labscript_utils.qtwidgets.toolpalette import ToolPaletteGroup
 from labscript_utils.shared_drive import path_to_agnostic
 
@@ -38,6 +38,7 @@ class DeviceTab(Tab):
         
         # Create the variables we need
         self._AO = {}
+        self._AI = {}
         self._DO = {}
         self._DDS = {}
         self._image = {}
@@ -205,7 +206,21 @@ class DeviceTab(Tab):
         # Instantiate the AO object
         return AO(BLACS_hardware_name, connection_name, self.device_name, self.program_device, self.settings, calib_class, calib_params,
                 properties['base_unit'], properties['min'], properties['max'], properties['step'], properties['decimals'])
-            
+
+
+    def create_analog_inputs(self,analog_properties):
+        for hardware_name,properties in analog_properties.items():
+            # Create and save the AI object
+            self._AI[hardware_name] = self._create_AI_object(self.device_name,hardware_name,hardware_name,properties)
+
+    def _create_AI_object(self,parent_device,BLACS_hardware_name,labscript_hardware_name,properties):
+        # Find the connection name
+        device = self.get_child_from_connection_table(parent_device,labscript_hardware_name)
+        connection_name = device.name if device else '-'
+
+        # Instantiate the AO object
+        return AI(BLACS_hardware_name, connection_name, self.device_name, self.program_device, self.settings)
+
     def create_dds_outputs(self,dds_properties):
         for hardware_name,properties in dds_properties.items():
             device = self.get_child_from_connection_table(self.device_name,hardware_name)
@@ -260,7 +275,51 @@ class DeviceTab(Tab):
                 widgets[hardware_name] = self._AO[hardware_name].create_widget(properties['display_name'],properties['horizontal_alignment'],properties['parent'])
         
         return widgets
-        
+
+    def create_analog_input_widgets(self,channel_properties):
+        exp_config = LabConfig()
+        broker_pub_port = int(exp_config.get('ports', 'BLACS_Broker_Pub'))
+
+        # close old socket if there is one
+        if self.socket is not None:
+            self.socket.close()
+            self.socke = None
+        if self.context is not None:
+            self.context.term()
+            self.context = None
+
+        # create a new subscribe socket to receive analoge values
+        self.context = zmq.Context()
+        self.socket = self.context.socket(zmq.SUB)
+        self.socket.connect ("tcp://127.0.0.1:%d" % broker_pub_port)
+
+        widgets = {}
+        for hardware_name,properties in channel_properties.items():
+            properties.setdefault('display_name',None)
+            properties.setdefault('horizontal_alignment',False)
+            properties.setdefault('parent',None)
+            if hardware_name in self._AI:
+                widgets[hardware_name] = self._AI[hardware_name].create_widget(properties['display_name'],properties['horizontal_alignment'],properties['parent'])
+                self.socket.setsockopt(zmq.SUBSCRIBE, "{} {}\0".format(self.device_name, hardware_name).encode('utf-8'))
+
+        self.analog_in_thread = threading.Thread(target=self._analog_read_loop, args=(widgets,))
+        self.analog_in_thread.daemon = True
+        self.analog_in_thread.start()
+
+        return widgets
+
+    def _analog_read_loop(self, widgets):
+        while True:
+            try:
+                devicename_and_channel, data = self.socket.recv_multipart()
+                channel = devicename_and_channel.decode().split(" ", 1)[1][:-1]
+                data = np.frombuffer(memoryview(data), dtype=np.float64)
+                random_value = np.random.choice(data,1)[0]
+                widgets[channel].set_value(random_value)
+            except Exception as e:
+                #raise(e)
+                break
+
     def create_dds_widgets(self,channel_properties):
         widgets = {}
         for hardware_name,properties in channel_properties.items():
@@ -270,8 +329,8 @@ class DeviceTab(Tab):
                 widgets[hardware_name] = self._DDS[hardware_name].create_widget(*properties['args'],**properties['kwargs'])
         
         return widgets
-    
-    def auto_create_widgets(self):
+
+    def auto_create_widgets(self, create_analog_in = False):
         dds_properties = {}
         for channel,output in self._DDS.items():
             dds_properties[channel] = {}
@@ -293,8 +352,16 @@ class DeviceTab(Tab):
         image_widgets = self.create_image_widgets(image_properties)        
         
         # Hack to maintain backwards compatibility with devices implemented
-        # prior to the introduction of the IMAGE output class 
-        if self._image:
+        # prior to the introduction of the IMAGE output class
+        if self._image and create_analog_in:
+            return dds_widgets, ao_widgets, do_widgets, image_widgets, ai_widgets
+        elif create_analog_in and not self._image:
+            ai_properties = {}
+            for channel, input in self._AI.items():
+                ai_properties[channel] = {}
+            ai_widgets = self.create_analog_input_widgets(ai_properties)
+            return dds_widgets,ao_widgets,do_widgets,ai_widgets
+        elif self._image and not create_analog_in:
             return dds_widgets, ao_widgets, do_widgets, image_widgets
         else:
             return dds_widgets, ao_widgets, do_widgets
@@ -323,6 +390,8 @@ class DeviceTab(Tab):
                     name = 'Image Outputs'
                 elif isinstance(self.get_channel(list(arg.keys())[0]),DDS):
                     name = 'DDS Outputs'
+                elif isinstance(self.get_channel(list(arg.keys())[0]),AI):
+                    name = 'Analog Inputs'
                 else:
                     # If it isn't DO, DDS or AO, we should forget about them and move on to the next argument
                     continue
@@ -385,6 +454,8 @@ class DeviceTab(Tab):
             return self._image[channel]
         elif channel in self._DDS:
             return self._DDS[channel]
+        elif channel in self._AI:
+            return self._AI[channel]
         else:
             return None
             
@@ -509,6 +580,18 @@ class DeviceTab(Tab):
                     ui.channel_label.setText(self._DO[channel].name)
                     ui.front_value.setText(front_value)
                     ui.remote_value.setText(remote_value)
+
+#Analog Input#
+            elif channel in self._AI:
+                front_value = ("%.4f")%self._last_programmed_values[channel]
+                remote_value = ("%.4f")%remote_value
+                if(front_value != remote_value):
+                    changed = True
+                    ui = UiLoader().load(os.path.join(BLACS_DIR, 'tab_value_changed.ui'))
+                    ui.channel_label.setText(self._AO[channel].name)
+                    ui.front_value.setText(front_value)
+                    ui.remote_value.setText(remote_value)
+
             elif channel in self._AO:
                 # A intermediately complicated case!
                 front_value = ("%."+str(self._AO[channel]._decimals)+"f")%self._last_programmed_values[channel]

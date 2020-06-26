@@ -20,6 +20,7 @@ from qtutils.qt.QtWidgets import *
 
 
 from labscript_utils.qtwidgets.analogoutput import AnalogOutput
+from labscript_utils.qtwidgets.analoginput import AnalogInput
 from labscript_utils.qtwidgets.digitaloutput import DigitalOutput, InvertedDigitalOutput
 from labscript_utils.qtwidgets.ddsoutput import DDSOutput
 from labscript_utils.qtwidgets.imageoutput import ImageOutput
@@ -435,7 +436,100 @@ class AO(object):
     @property
     def name(self):
         return self._hardware_name + ' - ' + self._connection_name
-            
+
+
+class AI(object):
+    def __init__(self, hardware_name, connection_name, device_name, program_function, settings):
+        self._connection_name = connection_name
+        self._hardware_name = hardware_name
+        self._device_name = device_name
+
+        self._widgets = []
+        self._program_device = program_function
+
+        # All of these are in base units ALWAYS
+        self._current_value = None # value in base units
+
+        self._logger = logging.getLogger('BLACS.%s.%s'%(self._device_name,hardware_name))
+
+        self._update_from_settings(settings,program=False)
+
+    def _update_from_settings(self,settings,program=True):
+        # Build up the settings dictionary if it isn't already
+        if not isinstance(settings,dict):
+            settings = {}
+        if 'front_panel_settings' not in settings or not isinstance(settings['front_panel_settings'],dict):
+            settings['front_panel_settings'] = {}
+        if self._hardware_name not in settings['front_panel_settings'] or not isinstance(settings['front_panel_settings'][self._hardware_name],dict):
+            settings['front_panel_settings'][self._hardware_name] = {}
+        # Set default values if they are not already saved in the settings dictionary
+        if 'base_value' not in settings['front_panel_settings'][self._hardware_name]:
+            settings['front_panel_settings'][self._hardware_name]['base_value'] = False
+        if 'locked' not in settings['front_panel_settings'][self._hardware_name]:
+            settings['front_panel_settings'][self._hardware_name]['locked'] = False
+        if 'name' not in settings['front_panel_settings'][self._hardware_name]:
+            settings['front_panel_settings'][self._hardware_name]['name'] = self._connection_name
+
+
+        # only keep a reference to the part of the settings dictionary relevant to this DO
+        self._settings = settings['front_panel_settings'][self._hardware_name]
+
+        # Update the state of the button
+        self.set_value(self._settings['base_value'],program=program)
+
+    def create_widget(self,display_name=None, horizontal_alignment=False, parent=None):
+        widget = AnalogInput(self._device_name, self._hardware_name,self._connection_name,display_name, horizontal_alignment, parent)
+        self.add_widget(widget)
+        return widget
+
+    def add_widget(self, widget):
+        if widget in self._widgets:
+            return False
+
+        self._widgets.append(widget)
+
+        # make sure the widget knows about this AI.
+        widget.set_AI(self,notify_old_AI=True,notify_new_AI=False)
+
+        # This will update the lock state of ALL widgets, including the one just added!
+        self.set_value(self._current_value, False)
+
+        return True
+
+    # If calling this method directly from outside the set_AO function in the analog widget
+    # you should NOT specify a value for new_AO.
+    def remove_widget(self,widget,call_set_AI = True,new_AI = None):
+        if widget not in self._widgets:
+            raise RuntimeError('The widget cannot be removed because it is not registered with this AO object')
+            #TODO: Make the above error message better!
+
+        self._widgets.remove(widget)
+
+        if call_set_AI:
+            widget.set_AI(new_AI,True,True)
+
+    @property
+    def value(self):
+        return self._current_value
+
+    def set_value(self, value, program=True):
+        # conversion to float means a string can be passed in too:
+        value = float(value)
+
+        self._current_value = value
+
+        # Update the saved value in the settings dictionary
+        self._settings['base_value'] = self._current_value
+
+        if program:
+            self._logger.debug('program device called')
+            self._program_device()
+
+    @property
+    def name(self):
+        return self._hardware_name + ' - ' + self._connection_name
+
+
 class DO(object):
     def __init__(self, hardware_name, connection_name, device_name, program_function, settings):
         self._hardware_name = hardware_name
