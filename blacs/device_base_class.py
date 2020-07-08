@@ -50,7 +50,10 @@ class DeviceTab(Tab):
         self._secondary_workers = []
         self._can_check_remote_values = False
         self._changed_radio_buttons = {}
-        
+
+        self.socket = None
+        self.context = None
+
         # Call the initialise GUI function
         self.initialise_GUI() 
         self.restore_save_data(self.settings['saved_data'] if 'saved_data' in self.settings else {})
