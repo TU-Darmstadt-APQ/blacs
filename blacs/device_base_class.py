@@ -15,6 +15,9 @@ import sys
 import os
 import time
 from queue import Queue
+import zmq, threading
+import numpy as np
+from labscript_utils.labconfig import LabConfig
 
 from qtutils.qt.QtCore import *
 from qtutils.qt.QtGui import *
@@ -29,7 +32,7 @@ from blacs.tab_base_classes import MODE_MANUAL, MODE_TRANSITION_TO_BUFFERED, MOD
 from blacs.output_classes import AI, AO, DO, DDS, Image
 from labscript_utils.qtwidgets.toolpalette import ToolPaletteGroup
 from labscript_utils.shared_drive import path_to_agnostic
-from labscript_utils.labconfig import LabConfig
+
 
 
 class DeviceTab(Tab):
