@@ -660,9 +660,9 @@ class QueueManager(object):
 
             # Link shot to main hdf5 file
             runfile['shots'].create_group(f'{shot_id:04d}_{shot_name}')
-            runfile['shots'][f'{shot_id:04d}'].attrs['shot_name'] = shot_name
-            runfile['shots'][f'{shot_id:04d}'].attrs['shot_id'] = shot_id
-            runfile['shots'][f'{shot_id:04d}']['data'] = h5py.ExternalLink(shot_filepath, "/")
+            runfile['shots'][f'{shot_id:04d}_{shot_name}'].attrs['shot_name'] = shot_name
+            runfile['shots'][f'{shot_id:04d}_{shot_name}'].attrs['shot_id'] = shot_id
+            runfile['shots'][f'{shot_id:04d}_{shot_name}']['data'] = h5py.ExternalLink(shot_filepath, "/")
 
             return shot_filepath
 
