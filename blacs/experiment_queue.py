@@ -20,6 +20,7 @@ import shutil
 from collections import defaultdict
 from tempfile import gettempdir
 from binascii import hexlify
+from types import ModuleType
 
 from qtutils.qt.QtCore import *
 from qtutils.qt.QtGui import *
@@ -31,6 +32,8 @@ process_tree = ProcessTree.instance()
 import labscript_utils.h5_lock, h5py
 
 from qtutils import *
+
+import labscript
 
 from labscript_utils.qtwidgets.elide_label import elide_label
 from labscript_utils.connections import ConnectionTable
@@ -375,11 +378,18 @@ class QueueManager(object):
     
     def process_request(self,h5_filepath):
         # check connection table
-        try:
-            new_conn = ConnectionTable(h5_filepath, logging_prefix='BLACS')
-        except Exception:
-            return "H5 file not accessible to Control PC\n"
-        result,error = inmain(self.BLACS.connection_table.compare_to,new_conn)
+        # skip checks for composition
+        with h5py.File(h5_filepath, 'r') as f:
+            is_composition = f.attrs['is_composition']
+            if is_composition:
+                result = True
+                error = ""
+            else:
+                try:
+                    new_conn = ConnectionTable(h5_filepath, logging_prefix='BLACS')
+                except Exception:
+                    return "H5 file not accessible to Control PC\n"
+                result, error = inmain(self.BLACS.connection_table.compare_to,new_conn)
         if result:
             # Has this run file been run already?
             with h5py.File(h5_filepath, 'r') as h5_file:
@@ -541,11 +551,34 @@ class QueueManager(object):
                 time.sleep(1)
                 continue
             
+            with h5py.File(path, 'r') as f:
+                is_composition = f.attrs['is_composition']
             
-            success = self.run_sub_shot(path, logger)
-            
-            if not success:
-                continue
+            if is_composition:
+                
+                try:
+
+                    with h5py.File(path, 'r') as f:
+                        script_text = f['script'].asstr()[()]
+
+                    script_module = ModuleType('__main__')
+                    script_module.__file__ = path
+                    # shot_callback(self, runfile_path, shot_name, shot_id)
+                    labscript.init_run(self.sub_shot_callback, path, logger)
+
+                    exe = compile(
+                        script_text, script_module.__file__, 'exec', dont_inherit=True
+                    )
+                    exec(exe, script_module.__dict__)
+
+                except Exception as err:
+                    print(err)
+                    
+            else:
+                success = self.run_sub_shot(path, logger)
+
+                if not success:
+                    continue
             
             ##########################################################################################################################################
             #                                                        Analysis Submission                                                             #
@@ -602,10 +635,41 @@ class QueueManager(object):
             self.set_status("Idle")
         logger.info('Stopping')
 
-    def run_sub_shot(self, path, logger):
+    def sub_shot_callback(self, shot_name, shot_id, runfile_path, logger):
+        shot_filepath = self.prepate_static_sub_shot(runfile_path, shot_name, shot_id)
+        self.run_sub_shot(shot_filepath, logger)
+        return shot_filepath
+
+    def prepate_static_sub_shot(self, runfile_path, shot_name, shot_id):
+
+        with h5py.File(runfile_path,'r+') as runfile:
+            if runfile['shot_templates'][shot_name] is None:
+                print("ERROR, shot template not found!")
+                raise Exception('ERROR, shot template not found!')
+
+
+            # find location of shot template
+            shot_template_link = runfile['shot_templates'][shot_name]
+            shot_folder = runfile.attrs['sub_shot_runs_folder']
+
+            shot_template_filepath = shot_template_link.file.filename
+            shot_filepath = f"{shot_folder}/{shot_id:04d}_{shot_name}.h5"
+
+            # Create shot file from template
+            shutil.copy(shot_template_filepath, shot_filepath)
+
+            # Link shot to main hdf5 file
+            runfile['shots'].create_group(f'{shot_id:04d}_{shot_name}')
+            runfile['shots'][f'{shot_id:04d}'].attrs['shot_name'] = shot_name
+            runfile['shots'][f'{shot_id:04d}'].attrs['shot_id'] = shot_id
+            runfile['shots'][f'{shot_id:04d}']['data'] = h5py.ExternalLink(shot_filepath, "/")
+
+            return shot_filepath
+
+    def run_sub_shot(self, path, logger, prefix = None):
 
         devices_in_use = {}
-        transition_list = {}   
+        transition_list = {}
         self.current_queue = queue.Queue()
 
         # Function to be run when abort button is clicked
