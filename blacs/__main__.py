@@ -732,7 +732,7 @@ if __name__ == '__main__':
         "DEFAULT": ["apparatus_name", "app_saved_configs"],
         "programs": ["text_editor", "text_editor_arguments",],
         "paths": ["shared_drive", "connection_table_h5", "connection_table_py",],
-        "ports": ["BLACS", "lyse"],
+        "ports": ["BLACS", "lyse", "runmanager"],
     }
     exp_config = LabConfig(required_params=required_config_params)
     settings_dir = Path(exp_config.get('DEFAULT', 'app_saved_configs'), 'blacs')

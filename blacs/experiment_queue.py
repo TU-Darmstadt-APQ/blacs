@@ -34,6 +34,7 @@ import labscript_utils.h5_lock, h5py
 from qtutils import *
 
 import labscript
+import runmanager
 
 from labscript_utils.qtwidgets.elide_label import elide_label
 from labscript_utils.connections import ConnectionTable
@@ -558,6 +559,10 @@ class QueueManager(object):
                 
                 try:
 
+
+                    # TODO: put this in own file & own thread for better isolation.
+
+
                     with h5py.File(path, 'r') as f:
                         script_text = f['script'].asstr()[()]
 
@@ -635,28 +640,20 @@ class QueueManager(object):
             self.set_status("Idle")
         logger.info('Stopping')
 
-    def sub_shot_callback(self, shot_name, shot_id, runfile_path, logger):
-        shot_filepath = self.prepate_static_sub_shot(runfile_path, shot_name, shot_id)
-        self.run_sub_shot(shot_filepath, logger)
-        return shot_filepath
-
-    def prepate_static_sub_shot(self, runfile_path, shot_name, shot_id):
+    def sub_shot_callback(self, shot_name, shot_id, runfile_path, logger, extra_runglobals = {}):
 
         with h5py.File(runfile_path,'r+') as runfile:
+            
             if runfile['shot_templates'][shot_name] is None:
                 print("ERROR, shot template not found!")
                 raise Exception('ERROR, shot template not found!')
 
+            is_static = runfile['shot_templates'][shot_name].attrs['is_static']
 
-            # find location of shot template
-            shot_template_link = runfile['shot_templates'][shot_name]
-            shot_folder = runfile.attrs['sub_shot_runs_folder']
-
-            shot_template_filepath = shot_template_link.file.filename
-            shot_filepath = f"{shot_folder}/{shot_id:04d}_{shot_name}.h5"
-
-            # Create shot file from template
-            shutil.copy(shot_template_filepath, shot_filepath)
+            if is_static:
+                shot_filepath = self.prepare_static_sub_shot(runfile, shot_name, shot_id)
+            else:
+                shot_filepath = self.prepare_dynamic_sub_shot(runfile, shot_name, shot_id, extra_runglobals)
 
             # Link shot to main hdf5 file
             runfile['shots'].create_group(f'{shot_id:04d}_{shot_name}')
@@ -664,7 +661,56 @@ class QueueManager(object):
             runfile['shots'][f'{shot_id:04d}_{shot_name}'].attrs['shot_id'] = shot_id
             runfile['shots'][f'{shot_id:04d}_{shot_name}']['data'] = h5py.ExternalLink(shot_filepath, "/")
 
-            return shot_filepath
+        self.run_sub_shot(shot_filepath, logger)
+
+        return shot_filepath
+
+    def prepare_dynamic_sub_shot(self, runfile, shot_name, shot_id, extra_runglobals = {}):
+
+        # find location of shot template
+        shot_template_link = runfile['shot_templates'][shot_name]
+        shot_folder = runfile.attrs['sub_shot_runs_folder']
+
+        shot_template_filepath = shot_template_link.file.filename
+        shot_filepath = f"{shot_folder}/{shot_id:04d}_{shot_name}.h5"
+
+        # Create shot file from template
+        shutil.copy(shot_template_filepath, shot_filepath)
+
+        with h5py.File(shot_filepath,'r+') as f:
+            labscript_path = f.attrs['dynamic_script']
+
+            for name, value in extra_runglobals.items():
+                if value is None:
+                    # Store it as a null object reference:
+                    value = h5py.Reference()
+                try:
+                    f['globals'].attrs[name] = value
+                except Exception as e:
+                    message = ('Global %s cannot be saved as an hdf5 attribute. ' % name +
+                            'Globals can only have relatively simple datatypes, with no nested structures. ' +
+                            'Original error was:\n' +
+                            '%s: %s' % (e.__class__.__name__, str(e)))
+                    raise ValueError(message)
+
+        # compile sub-shot
+        runmanager.compile_labscript_blocking(labscript_path, shot_filepath)
+
+        return shot_filepath
+
+    def prepare_static_sub_shot(self, runfile, shot_name, shot_id):
+
+        # find location of shot template
+        shot_template_link = runfile['shot_templates'][shot_name]
+        shot_folder = runfile.attrs['sub_shot_runs_folder']
+
+        shot_template_filepath = shot_template_link.file.filename
+        shot_filepath = f"{shot_folder}/{shot_id:04d}_{shot_name}.h5"
+
+        # Create shot file from template
+        shutil.copy(shot_template_filepath, shot_filepath)
+
+        return shot_filepath
 
     def run_sub_shot(self, path, logger, prefix = None):
 
