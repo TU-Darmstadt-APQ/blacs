@@ -480,12 +480,18 @@ class QueueManager(object):
             return False
 
     @inmain_decorator(wait_for_return=True)
-    def set_status(self, queue_status, shot_filepath=None):
+    def set_status(self, queue_status, shot_filepath=None, composition_filepath=None):
         self._ui.queue_status.setText(str(queue_status))
         if shot_filepath is not None:
-            self._ui.running_shot_name.setText('<b>%s</b>'% str(os.path.basename(shot_filepath)))
+            if composition_filepath is None:
+                self._ui.running_shot_name.setText('<b>%s</b>'% str(os.path.basename(shot_filepath)))
+            else:
+                self._ui.running_shot_name.setText('<b>%s:%s</b>'% (str(os.path.basename(composition_filepath)), str(os.path.basename(shot_filepath))))
         else:
-            self._ui.running_shot_name.setText('')
+            if composition_filepath is not None:
+                self._ui.running_shot_name.setText('<b>%s</b>'% str(os.path.basename(composition_filepath)))
+            else:
+                self._ui.running_shot_name.setText('')
         
     @inmain_decorator(wait_for_return=True)
     def get_status(self):
@@ -642,6 +648,7 @@ class QueueManager(object):
 
     def sub_shot_callback(self, shot_name, shot_id, runfile_path, logger, extra_runglobals = {}):
 
+        self.set_status("Preparing sub-shot", composition_filepath=runfile_path)
         with h5py.File(runfile_path,'r+') as runfile:
             
             if runfile['shot_templates'][shot_name] is None:
@@ -661,7 +668,7 @@ class QueueManager(object):
             runfile['shots'][f'{shot_id:04d}_{shot_name}'].attrs['shot_id'] = shot_id
             runfile['shots'][f'{shot_id:04d}_{shot_name}']['data'] = h5py.ExternalLink(shot_filepath, "/")
 
-        self.run_sub_shot(shot_filepath, logger)
+        self.run_sub_shot(shot_filepath, logger, runfile_path)
 
         return shot_filepath
 
@@ -693,6 +700,7 @@ class QueueManager(object):
                             '%s: %s' % (e.__class__.__name__, str(e)))
                     raise ValueError(message)
 
+        self.set_status("Compiling sub-shot...", composition_filepath=runfile.filename)
         # compile sub-shot
         runmanager.compile_labscript_blocking(labscript_path, shot_filepath)
 
@@ -712,7 +720,7 @@ class QueueManager(object):
 
         return shot_filepath
 
-    def run_sub_shot(self, path, logger, prefix = None):
+    def run_sub_shot(self, path, logger, composition_filepath = None):
 
         devices_in_use = {}
         transition_list = {}
@@ -744,7 +752,7 @@ class QueueManager(object):
             error_condition = False
             abort = False
             restarted = False
-            self.set_status("Transitioning to buffered...", path)
+            self.set_status("Transitioning to buffered...", path, composition_filepath)
             
             # Enable abort button, and link in current_queue:
             inmain(self._ui.queue_abort_button.clicked.connect,abort_function)
@@ -890,7 +898,7 @@ class QueueManager(object):
         
             # Get front panel data, but don't save it to the h5 file until the experiment ends:
             states,tab_positions,window_data,plugin_data = self.BLACS.front_panel_settings.get_save_data()
-            self.set_status("Running (program time: %.3fs)..."%(time.time() - start_time), path)
+            self.set_status("Running (program time: %.3fs)..."%(time.time() - start_time), path, composition_filepath)
                 
             # A Queue for event-based notification of when the experiment has finished.
             experiment_finished_queue = queue.Queue()
@@ -956,7 +964,7 @@ class QueueManager(object):
                 return False
             
             logger.info('Run complete')
-            self.set_status("Saving data...", path)
+            self.set_status("Saving data...", path, composition_filepath)
         # End try/except block here
         except Exception:
             logger.exception("Error in queue manager execution. Queue paused.")
