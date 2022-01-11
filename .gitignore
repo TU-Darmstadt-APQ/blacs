@@ -160,3 +160,4 @@ docs/html/
 docs/source/_build/
 docs/source/components.rst
 docs/source/api/_autosummary
+blacs/memprof.txt
