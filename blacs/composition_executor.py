@@ -101,7 +101,7 @@ class BatchProcessor(object):
 
     def sub_shot_callback(self, shot_name, shot_id, runfile_path, extra_runglobals = {}):
 
-        # TODO: self.set_status("Preparing sub-shot", composition_filepath=runfile_path)
+        self.to_parent.put(['status', ["Preparing sub-shot", None, runfile_path]])
         with h5py.File(runfile_path,'r+') as runfile:
             
             if runfile['shot_templates'][shot_name] is None:
@@ -162,7 +162,7 @@ class BatchProcessor(object):
                             '%s: %s' % (e.__class__.__name__, str(e)))
                     raise ValueError(message)
 
-        # TODO: self.set_status("Compiling sub-shot...", composition_filepath=runfile.filename)
+        self.to_parent.put(['status', ["Compiling sub-shot...", None, runfile.filename]])
         # compile sub-shot
         self.to_batch_compiler.put(['compile', [labscript_path, shot_filepath]])
         while True:

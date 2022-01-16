@@ -573,6 +573,8 @@ class QueueManager(object):
                     if signal == 'done':
                         success = data
                         break
+                    elif signal == 'status':
+                        self.set_status(*data)
                     elif signal == 'run':
                         shot_filepath, = data
                         success = self.run_sub_shot(shot_filepath, logger, path)
