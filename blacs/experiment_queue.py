@@ -163,6 +163,11 @@ class QueueManager(object):
         self.manager.daemon=True
         self.manager.start()
 
+        self.to_composition_executor, self.from_composition_executor, self.composition_executor = process_tree.subprocess(
+            os.path.join(os.path.dirname(__file__), 'composition_executor.py'),
+            # output_redirection_port=self.output_box.port,
+        )
+
     def _create_headers(self):
         self._model.setHorizontalHeaderItem(FILEPATH_COLUMN, QStandardItem('Filepath'))
         
@@ -562,32 +567,24 @@ class QueueManager(object):
                 is_composition = f.attrs['is_composition']
             
             if is_composition:
-                
-                try:
-
-
-                    # TODO: put this in own file & own thread for better isolation.
-
-
-                    with h5py.File(path, 'r') as f:
-                        script_text = f['script'].asstr()[()]
-
-                    script_module = ModuleType('__main__')
-                    script_module.__file__ = path
-                    # shot_callback(self, runfile_path, shot_name, shot_id)
-                    labscript.init_run(self.sub_shot_callback, path, logger)
-
-                    exe = compile(
-                        script_text, script_module.__file__, 'exec', dont_inherit=True
-                    )
-                    exec(exe, script_module.__dict__)
-
-                except Exception as err:
-                    print(err)
+                self.to_composition_executor.put(['execute', [path]])
+                while True:
+                    signal, data = self.from_composition_executor.get()
+                    if signal == 'done':
+                        success = data
+                        break
+                    elif signal == 'run':
+                        shot_filepath, = data
+                        success = self.run_sub_shot(shot_filepath, logger, path)
+                        self.to_composition_executor.put(['finish_run', [success]])
+                    else:
+                        raise RuntimeError((signal, data))
                     
+                if not success:
+                    continue
+
             else:
                 success = self.run_sub_shot(path, logger)
-
                 if not success:
                     continue
             
@@ -646,79 +643,6 @@ class QueueManager(object):
             self.set_status("Idle")
         logger.info('Stopping')
 
-    def sub_shot_callback(self, shot_name, shot_id, runfile_path, logger, extra_runglobals = {}):
-
-        self.set_status("Preparing sub-shot", composition_filepath=runfile_path)
-        with h5py.File(runfile_path,'r+') as runfile:
-            
-            if runfile['shot_templates'][shot_name] is None:
-                print("ERROR, shot template not found!")
-                raise Exception('ERROR, shot template not found!')
-
-            is_static = runfile['shot_templates'][shot_name].attrs['is_static']
-
-            if is_static:
-                shot_filepath = self.prepare_static_sub_shot(runfile, shot_name, shot_id)
-            else:
-                shot_filepath = self.prepare_dynamic_sub_shot(runfile, shot_name, shot_id, extra_runglobals)
-
-            # Link shot to main hdf5 file
-            runfile['shots'].create_group(f'{shot_id:04d}_{shot_name}')
-            runfile['shots'][f'{shot_id:04d}_{shot_name}'].attrs['shot_name'] = shot_name
-            runfile['shots'][f'{shot_id:04d}_{shot_name}'].attrs['shot_id'] = shot_id
-            runfile['shots'][f'{shot_id:04d}_{shot_name}']['data'] = h5py.ExternalLink(shot_filepath, "/")
-
-        self.run_sub_shot(shot_filepath, logger, runfile_path)
-
-        return shot_filepath
-
-    def prepare_dynamic_sub_shot(self, runfile, shot_name, shot_id, extra_runglobals = {}):
-
-        # find location of shot template
-        shot_template_link = runfile['shot_templates'][shot_name]
-        shot_folder = runfile.attrs['sub_shot_runs_folder']
-
-        shot_template_filepath = shot_template_link.file.filename
-        shot_filepath = f"{shot_folder}/{shot_id:04d}_{shot_name}.h5"
-
-        # Create shot file from template
-        shutil.copy(shot_template_filepath, shot_filepath)
-
-        with h5py.File(shot_filepath,'r+') as f:
-            labscript_path = f.attrs['dynamic_script']
-
-            for name, value in extra_runglobals.items():
-                if value is None:
-                    # Store it as a null object reference:
-                    value = h5py.Reference()
-                try:
-                    f['globals'].attrs[name] = value
-                except Exception as e:
-                    message = ('Global %s cannot be saved as an hdf5 attribute. ' % name +
-                            'Globals can only have relatively simple datatypes, with no nested structures. ' +
-                            'Original error was:\n' +
-                            '%s: %s' % (e.__class__.__name__, str(e)))
-                    raise ValueError(message)
-
-        self.set_status("Compiling sub-shot...", composition_filepath=runfile.filename)
-        # compile sub-shot
-        runmanager.compile_labscript_blocking(labscript_path, shot_filepath)
-
-        return shot_filepath
-
-    def prepare_static_sub_shot(self, runfile, shot_name, shot_id):
-
-        # find location of shot template
-        shot_template_link = runfile['shot_templates'][shot_name]
-        shot_folder = runfile.attrs['sub_shot_runs_folder']
-
-        shot_template_filepath = shot_template_link.file.filename
-        shot_filepath = f"{shot_folder}/{shot_id:04d}_{shot_name}.h5"
-
-        # Create shot file from template
-        shutil.copy(shot_template_filepath, shot_filepath)
-
-        return shot_filepath
 
     def run_sub_shot(self, path, logger, composition_filepath = None):
 
