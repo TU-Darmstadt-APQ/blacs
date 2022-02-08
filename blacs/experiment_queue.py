@@ -40,6 +40,57 @@ from blacs.tab_base_classes import MODE_MANUAL, MODE_TRANSITION_TO_BUFFERED, MOD
 import blacs.plugins as plugins
 
 
+if sys.platform != 'win32':
+    from time import perf_counter
+    try:
+        from time import perf_counter_ns
+    except ImportError:
+        def perf_counter_ns():
+            """perf_counter_ns() -> int
+
+            Performance counter for benchmarking as nanoseconds.
+            """
+            return int(perf_counter() * 10**9)
+else:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+
+    kernel32.QueryPerformanceFrequency.argtypes = (
+        wintypes.PLARGE_INTEGER,) # lpFrequency
+
+    kernel32.QueryPerformanceCounter.argtypes = (
+        wintypes.PLARGE_INTEGER,) # lpPerformanceCount
+
+    _qpc_frequency = wintypes.LARGE_INTEGER()
+    if not kernel32.QueryPerformanceFrequency(ctypes.byref(_qpc_frequency)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    _qpc_frequency = _qpc_frequency.value
+
+    def perf_counter_ns():
+        """perf_counter_ns() -> int
+
+        Performance counter for benchmarking as nanoseconds.
+        """
+        count = wintypes.LARGE_INTEGER()
+        if not kernel32.QueryPerformanceCounter(ctypes.byref(count)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return (count.value * 10**9) // _qpc_frequency
+
+    def perf_counter():
+        """perf_counter() -> float
+
+        Performance counter for benchmarking.
+        """
+        count = wintypes.LARGE_INTEGER()
+        if not kernel32.QueryPerformanceCounter(ctypes.byref(count)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return count.value / _qpc_frequency
+
+
+
+
 def tempfilename(prefix='BLACS-temp-', suffix='.h5'):
     """Return a filepath appropriate for use as a temporary file"""
     random_hex = hexlify(os.urandom(16)).decode()
@@ -529,7 +580,7 @@ class QueueManager(object):
                     self.set_status("Queue paused") 
                 time.sleep(1)
                 continue
-            
+
             # Get the top file
             try:
                 path = self.get_next_file()
@@ -541,6 +592,8 @@ class QueueManager(object):
                 time.sleep(1)
                 continue
             
+            print(f"{threading.get_ident()}, QueueManager, BLACS, sub_shot_start, {path}, {perf_counter_ns()}")
+
             devices_in_use = {}
             transition_list = {}   
             self.current_queue = queue.Queue()
@@ -586,6 +639,7 @@ class QueueManager(object):
                     except Exception:
                         logger.exception("Plugin callback raised an exception")
 
+                print(f"{threading.get_ident()}, QueueManager, BLACS, build_groups_start, {path}, {perf_counter_ns()}")
                 start_time = time.time()
                 
                 with h5py.File(path, 'r') as hdf5_file:
@@ -607,9 +661,13 @@ class QueueManager(object):
                     start_groups[start_order[name]].add(name)
                     stop_groups[stop_order[name]].add(name)
 
+                print(f"{threading.get_ident()}, QueueManager, BLACS, build_groups_stop, {path}, {perf_counter_ns()}")
+                
+                print(f"{threading.get_ident()}, QueueManager, BLACS, transition_to_buffered_start, {path}, {perf_counter_ns()}")
                 while (transition_list or start_groups) and not error_condition:
                     if not transition_list:
                         # Ready to transition the next group:
+                        print(f"{threading.get_ident()}, QueueManager, BLACS, signal_start, {path}, {perf_counter_ns()}")
                         for name in start_groups.pop(min(start_groups)):
                             try:
                                 # Connect restart signal from tabs to current_queue and transition the device to buffered mode
@@ -624,11 +682,17 @@ class QueueManager(object):
                                 break
                         if error_condition:
                             break
-                        
+                        print(f"{threading.get_ident()}, QueueManager, BLACS, signal_end, {path}, {perf_counter_ns()}")
+
                     try:
                         # Wait for a device to transtition_to_buffered:
                         logger.debug('Waiting for the following devices to finish transitioning to buffered mode: %s'%str(transition_list))
+                       
+                       
+                        print(f"{threading.get_ident()}, QueueManager, BLACS, transition_queue_wait, {path}, {perf_counter_ns()}")
                         device_name, result = self.current_queue.get(timeout=2)
+                        print(f"{threading.get_ident()}, QueueManager, {device_name}, transition_device_start, {path}, {perf_counter_ns()}")
+
                         
                         #Handle abort button signal
                         if device_name == 'Queue Manager' and result == 'abort':
@@ -655,6 +719,8 @@ class QueueManager(object):
                             break
 
                         del transition_list[device_name]
+                        print(f"{threading.get_ident()}, QueueManager, {device_name}, transition_device_end, {path}, {perf_counter_ns()}")
+
                     except queue.Empty:
                         # It's been 2 seconds without a device finishing
                         # transitioning to buffered. Is there an error?
@@ -710,6 +776,9 @@ class QueueManager(object):
                     continue
                 
             
+                print(f"{threading.get_ident()}, QueueManager, BLACS, transition_to_buffered_end, {path}, {perf_counter_ns()}")
+            
+                print(f"{threading.get_ident()}, QueueManager, BLACS, experiment_start, {path}, {perf_counter_ns()}")
             
                 ##########################################################################################################################################
                 #                                                             SCIENCE!                                                                   #
@@ -840,10 +909,15 @@ class QueueManager(object):
                         logger.exception("Plugin callback raised an exception")
 
             
+            print(f"{threading.get_ident()}, QueueManager, BLACS, experiment_end, {path}, {perf_counter_ns()}")
+
             ##########################################################################################################################################
             #                                                       Transition to manual                                                             #
             ##########################################################################################################################################
-            # start new try/except block here                   
+            # start new try/except block here      
+            
+            print(f"{threading.get_ident()}, QueueManager, BLACS, transition_to_manual_start, {path}, {perf_counter_ns()}")
+                                
             try:
                 with h5py.File(path,'r+') as hdf5_file:
                     self.BLACS.front_panel_settings.store_front_panel_in_h5(hdf5_file,states,tab_positions,window_data,plugin_data,save_conn_table=False, save_queue_data=False)
@@ -914,7 +988,11 @@ class QueueManager(object):
 
                 # Raise the error in a thread for visibility
                 zprocess.raise_exception_in_thread(sys.exc_info())
-                
+                    
+            print(f"{threading.get_ident()}, QueueManager, BLACS, transition_to_manual_end, {path}, {perf_counter_ns()}")
+
+            print(f"{threading.get_ident()}, QueueManager, BLACS, sub_shot_end, {path}, {perf_counter_ns()}")
+
             if error_condition:                
                 # clean up the h5 file
                 self.manager_paused = True
@@ -992,4 +1070,3 @@ class QueueManager(object):
 
             self.set_status("Idle")
         logger.info('Stopping')
-

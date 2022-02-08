@@ -14,6 +14,7 @@ import logging
 import sys
 import os
 import time
+import threading
 from queue import Queue
 
 from qtutils.qt.QtCore import *
@@ -29,6 +30,54 @@ from blacs.tab_base_classes import MODE_MANUAL, MODE_TRANSITION_TO_BUFFERED, MOD
 from blacs.output_classes import AO, DO, DDS, Image
 from labscript_utils.qtwidgets.toolpalette import ToolPaletteGroup
 from labscript_utils.shared_drive import path_to_agnostic
+
+if sys.platform != 'win32':
+    from time import perf_counter
+    try:
+        from time import perf_counter_ns
+    except ImportError:
+        def perf_counter_ns():
+            """perf_counter_ns() -> int
+
+            Performance counter for benchmarking as nanoseconds.
+            """
+            return int(perf_counter() * 10**9)
+else:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+
+    kernel32.QueryPerformanceFrequency.argtypes = (
+        wintypes.PLARGE_INTEGER,) # lpFrequency
+
+    kernel32.QueryPerformanceCounter.argtypes = (
+        wintypes.PLARGE_INTEGER,) # lpPerformanceCount
+
+    _qpc_frequency = wintypes.LARGE_INTEGER()
+    if not kernel32.QueryPerformanceFrequency(ctypes.byref(_qpc_frequency)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    _qpc_frequency = _qpc_frequency.value
+
+    def perf_counter_ns():
+        """perf_counter_ns() -> int
+
+        Performance counter for benchmarking as nanoseconds.
+        """
+        count = wintypes.LARGE_INTEGER()
+        if not kernel32.QueryPerformanceCounter(ctypes.byref(count)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return (count.value * 10**9) // _qpc_frequency
+
+    def perf_counter():
+        """perf_counter() -> float
+
+        Performance counter for benchmarking.
+        """
+        count = wintypes.LARGE_INTEGER()
+        if not kernel32.QueryPerformanceCounter(ctypes.byref(count)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return count.value / _qpc_frequency
 
 
 class DeviceTab(Tab):
@@ -576,8 +625,12 @@ class DeviceTab(Tab):
     def start_run(self,notify_queue):
         raise NotImplementedError('The device %s has not implemented a start method and so cannot be used to trigger the experiment to begin. Please implement the start method or use a different pseudoclock as the master pseudoclock'%self.device_name)
     
+    
+
+
     @define_state(MODE_MANUAL,True)
     def transition_to_buffered(self,h5_file,notify_queue): 
+        print(f"{threading.get_ident()}, DeviceTab, {self.device_name}, transition_to_buffered_start, {h5_file}, {perf_counter_ns()}")
         # Get rid of any "remote values changed" dialog
         self._changed_widget.hide()
     
@@ -597,7 +650,8 @@ class DeviceTab(Tab):
                 else:
                     self._final_values = None
                     break
-        
+
+        print(f"{threading.get_ident()}, DeviceTab, {self.device_name}, transition_to_buffered_device_done, {h5_file}, {perf_counter_ns()}")
         # If we get None back, then the worker process did not finish properly
         if self._final_values is None:
             notify_queue.put([self.device_name,'fail'])
@@ -609,6 +663,8 @@ class DeviceTab(Tab):
             # Tell the queue manager that we're done:
             self.mode = MODE_BUFFERED
             notify_queue.put([self.device_name,'success'])
+        
+        print(f"{threading.get_ident()}, DeviceTab, {self.device_name}, transition_to_buffered_end, {h5_file}, {perf_counter_ns()}")
        
     @define_state(MODE_TRANSITION_TO_BUFFERED,False)
     def abort_transition_to_buffered(self,workers=None):
