@@ -629,7 +629,7 @@ class DeviceTab(Tab):
 
 
     @define_state(MODE_MANUAL,True)
-    def transition_to_buffered(self,h5_file,notify_queue): 
+    def transition_to_buffered(self,h5_file,notify_queue, intercom): 
         print(f"{threading.get_ident()}, DeviceTab, {self.device_name}, transition_to_buffered_start, {h5_file}, {perf_counter_ns()}")
         # Get rid of any "remote values changed" dialog
         self._changed_widget.hide()
@@ -640,11 +640,11 @@ class DeviceTab(Tab):
         # transition_to_buffered returns the final values of the run, to update the GUI with at the end of the run:
         transitioned_called = [self._primary_worker]
         front_panel_values = self.get_front_panel_values()
-        self._final_values = yield(self.queue_work(self._primary_worker,'_transition_to_buffered',self.device_name,h5_file,front_panel_values,self._force_full_buffered_reprogram))
+        self._final_values = yield(self.queue_work(self._primary_worker,'_transition_to_buffered',self.device_name,h5_file,front_panel_values,self.force_full_buffered_reprogram,intercom))
         if self._final_values is not None:
             for worker in self._secondary_workers:
                 transitioned_called.append(worker)
-                extra_final_values = yield(self.queue_work(worker,'_transition_to_buffered',self.device_name,h5_file,front_panel_values,self.force_full_buffered_reprogram))
+                extra_final_values = yield(self.queue_work(worker,'_transition_to_buffered',self.device_name,h5_file,front_panel_values,self.force_full_buffered_reprogram,intercom))
                 if extra_final_values is not None:
                     self._final_values.update(extra_final_values)
                 else:
@@ -781,7 +781,7 @@ class DeviceWorker(Worker):
         
         return front_panel_values
         
-    def transition_to_buffered(self,device_name,h5file,front_panel_values,refresh):
+    def transition_to_buffered(self,device_name,h5file,front_panel_values,refresh,intercom):
         time.sleep(3)
         for channel,value in front_panel_values.items():
             if type(value) != type(True):
