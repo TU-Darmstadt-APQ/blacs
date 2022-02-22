@@ -497,6 +497,7 @@ class QueueManager(object):
                         'waits',
                         'time_markers',
                         'shot_properties',
+                        'jumps',
                     ]
                     for group in groups_to_copy:
                         if group in old_file:
