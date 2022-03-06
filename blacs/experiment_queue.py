@@ -537,12 +537,12 @@ class QueueManager(object):
         return str(self._model.takeRow(0)[0].text())
     
     @inmain_decorator(wait_for_return=True)    
-    def transition_device_to_buffered(self, name, transition_list, h5file, restart_receiver, intercom):
+    def transition_device_to_buffered(self, name, transition_list, h5file, restart_receiver):
         tab = self.BLACS.tablist[name]
         if self.get_device_error_state(name,self.BLACS.tablist):
             return False
         tab.connect_restart_receiver(restart_receiver)
-        tab.transition_to_buffered(h5file,self.current_queue, intercom)
+        tab.transition_to_buffered(h5file,self.current_queue)
         transition_list[name] = tab
         return True
     
@@ -620,8 +620,6 @@ class QueueManager(object):
             try:  
                 # A Queue for event-based notification when the tabs have
                 # completed transitioning to buffered:        
-                intercom = "test intercom"
-
                 timed_out = False
                 error_condition = False
                 abort = False
@@ -673,7 +671,7 @@ class QueueManager(object):
                         for name in start_groups.pop(min(start_groups)):
                             try:
                                 # Connect restart signal from tabs to current_queue and transition the device to buffered mode
-                                success = self.transition_device_to_buffered(name,transition_list,path,restart_function, intercom)
+                                success = self.transition_device_to_buffered(name,transition_list,path,restart_function)
                                 if not success:
                                     logger.error('%s has an error condition, aborting run' % name)
                                     error_condition = True
