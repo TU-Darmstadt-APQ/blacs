@@ -163,6 +163,7 @@ class QueueManager(object):
         self._manager_repeat = False
         self._manager_repeat_mode = self.REPEAT_ALL
         self.master_pseudoclock = self.BLACS.connection_table.master_pseudoclock
+        self.jump_device = self.BLACS.connection_table.jump_device
         
         self._logger = logging.getLogger('BLACS.QueueManager')   
         
@@ -804,6 +805,7 @@ class QueueManager(object):
 
                 #TODO: fix potential race condition if BLACS is closing when this line executes?
                 self.BLACS.tablist[self.master_pseudoclock].start_run(experiment_finished_queue)
+                self.BLACS.tablist[self.jump_device].start_run(experiment_finished_queue)
                 
                                                 
                 # Wait for notification of the end of run:
