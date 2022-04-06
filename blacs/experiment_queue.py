@@ -631,6 +631,8 @@ class QueueManager(object):
                 abort = False
                 restarted = False
                 self.set_status("Transitioning to buffered...", path)
+
+                transition_to_buffered_start = time.perf_counter()
                 
                 # Enable abort button, and link in current_queue:
                 inmain(self._ui.queue_abort_button.clicked.connect,abort_function)
@@ -781,6 +783,21 @@ class QueueManager(object):
                     # Start a new iteration
                     continue
                 
+
+                transition_to_buffered_time = time.perf_counter() - transition_to_buffered_start
+                with h5py.File(path, 'a') as hdf5_file:
+                    if 'data' not in hdf5_file['/']:
+                        group = hdf5_file.create_group('data')
+                    else:
+                        group = hdf5_file['data']
+                    if 'timings' not in group:
+                        group = group.create_group('timings')
+                    else:
+                        group = group['timings']
+
+                    group.attrs['transition_to_buffered_time'] = transition_to_buffered_time
+
+                    uses_jump_device = hdf5_file['connection table'].attrs['jump_device'] != 'None'
             
                 print(f"{threading.get_ident()}, QueueManager, BLACS, transition_to_buffered_end, {path}, {perf_counter_ns()}")
             
@@ -809,8 +826,12 @@ class QueueManager(object):
                         logger.exception("Plugin callback raised an exception")
 
                 #TODO: fix potential race condition if BLACS is closing when this line executes?
-                self.BLACS.tablist[self.master_pseudoclock].start_run(experiment_finished_queue)
-                self.BLACS.tablist[self.jump_device].start_run(experiment_finished_queue)
+                if uses_jump_device:
+                    self.BLACS.tablist[self.master_pseudoclock].start_run(experiment_finished_queue)
+                    self.BLACS.tablist[self.jump_device].start_run(experiment_finished_queue)
+                else:
+                    self.BLACS.tablist[self.master_pseudoclock].start_run(experiment_finished_queue, control=True)
+
                 
                                                 
                 # Wait for notification of the end of run:
@@ -922,6 +943,9 @@ class QueueManager(object):
             #                                                       Transition to manual                                                             #
             ##########################################################################################################################################
             # start new try/except block here      
+
+
+            transition_to_manual_start = time.perf_counter()
             
             print(f"{threading.get_ident()}, QueueManager, BLACS, transition_to_manual_start, {path}, {perf_counter_ns()}")
                                 
@@ -929,7 +953,8 @@ class QueueManager(object):
                 with h5py.File(path,'r+') as hdf5_file:
                     self.BLACS.front_panel_settings.store_front_panel_in_h5(hdf5_file,states,tab_positions,window_data,plugin_data,save_conn_table=False, save_queue_data=False)
 
-                    data_group = hdf5_file['/'].create_group('data')
+                    # data_group = hdf5_file['/'].create_group('data')
+                    data_group = hdf5_file['data']
                     # stamp with the run time of the experiment
                     hdf5_file.attrs['run time'] = time.strftime('%Y%m%dT%H%M%S',run_time)
         
@@ -1050,6 +1075,19 @@ class QueueManager(object):
                     callback(path)
                 except Exception:
                     logger.exception("Plugin callback raised an exception")
+
+
+            transition_to_manual_time = time.perf_counter() - transition_to_manual_start
+            with h5py.File(path, 'a') as hdf5_file:
+                if 'data' not in hdf5_file['/']:
+                    group = hdf5_file.create_group('data')
+                else:
+                    group = hdf5_file['data']
+                if 'timings' not in group:
+                    group = group.create_group('timings')
+                else:
+                    group = group['timings']
+                group.attrs['transition_to_manual_time'] = transition_to_manual_time
 
             ##########################################################################################################################################
             #                                                        Repeat Experiment?                                                              #
