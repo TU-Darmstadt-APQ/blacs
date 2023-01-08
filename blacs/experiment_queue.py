@@ -185,6 +185,7 @@ class QueueManager(object):
         self._ui.queue_push_down.clicked.connect(self._move_down)
         self._ui.queue_push_to_top.clicked.connect(self._move_top)
         self._ui.queue_push_to_bottom.clicked.connect(self._move_bottom)
+        self._ui.restart_all_devices.clicked.connect(self._restart_all_devices)
 
         # Set the elision of the status labels:
         elide_label(self._ui.queue_status, self._ui.queue_status_verticalLayout, Qt.ElideRight)
@@ -331,6 +332,11 @@ class QueueManager(object):
         while index_list:
             self._model.takeRow(index_list[0].row())
             index_list = self._ui.treeview.selectedIndexes()
+
+    def _restart_all_devices(self):
+        self._logger.debug('Restart all devices...')
+        for tab in self.BLACS.tablist:
+            inmain(self.BLACS.tablist[tab].restart)
     
     def _move_up(self):        
         # Get the selection model from the treeview
