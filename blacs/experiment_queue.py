@@ -336,7 +336,9 @@ class QueueManager(object):
     def _restart_all_devices(self):
         self._logger.debug('Restart all devices...')
         for tab in self.BLACS.tablist:
-            inmain(self.BLACS.tablist[tab].restart)
+            if 'restart' in dir(self.BLACS.tablist[tab]):
+                # only restart when the tab has a restart function
+                inmain(self.BLACS.tablist[tab].restart)
     
     def _move_up(self):        
         # Get the selection model from the treeview
