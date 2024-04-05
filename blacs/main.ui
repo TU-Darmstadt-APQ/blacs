@@ -212,7 +212,7 @@ QToolButton:hover:checked {
                       <string>Pause the queue</string>
                      </property>
                      <property name="text">
-                      <string>Pause</string>
+                      <string>L. Pause</string>
                      </property>
                      <property name="icon">
                       <iconset>
