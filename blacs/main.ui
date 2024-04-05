@@ -194,7 +194,7 @@ QToolButton:hover:checked {
                       <string>Pause the queue</string>
                      </property>
                      <property name="text">
-                      <string>Pause</string>
+                      <string>L. Pause</string>
                      </property>
                      <property name="icon">
                       <iconset resource="../../../../usr/local/lib/python2.7/dist-packages/qtutils/icons/icons.qrc">
