@@ -49,6 +49,7 @@ class Plugin(object):
         self.close = False
         self.shot_file = None
         self.pause_triggered = False
+        self.error_count = 0
 
     def get_menu_class(self):
         return None
@@ -129,6 +130,12 @@ class Plugin(object):
                     self.BLACS['experiment_queue'].prepend_second_position(h5_filepath)
             else:
                 self.BLACS['experiment_queue'].prepend(h5_filepath)
+            self.error_count += 1
+            # refresh the locks after the shot to retry. We already keep track of the error count.
+            self.trigger_reset()
+        else:
+            self.error_count = 0
+        self.tab.update_failed_locks(self.error_count)
 
     def repeat_filter(self, h5_filepath):
         return self.pause_triggered
@@ -178,6 +185,12 @@ class TestTab(PluginTab):
         self.controlWidget = ControlWidget()
         self.layout.addWidget(self.controlWidget)
         self.layout.addItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.MinimumExpanding))
+
+        self.label = QLabel("Failed locks in a row: 0")
+        self.layout.addWidget(self.label)
+
+    def update_failed_locks(self, num):
+        self.label.setText(f"Failed locks in a row: {num}")
 
     def reset_clicked(self):
         if self.plugin is not None:
