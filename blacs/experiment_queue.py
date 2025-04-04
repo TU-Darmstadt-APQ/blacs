@@ -823,6 +823,7 @@ class QueueManager(object):
                 experiment_finished_queue = queue.Queue()
                 logger.debug('About to start the master pseudoclock')
                 run_time = time.localtime()
+                run_start = time.perf_counter()
 
                 ##########################################################################################################################################
                 #                                                        Plugin callbacks                                                                #
@@ -965,6 +966,7 @@ class QueueManager(object):
                     # data_group = hdf5_file['data']
                     # stamp with the run time of the experiment
                     hdf5_file.attrs['run time'] = time.strftime('%Y%m%dT%H%M%S',run_time)
+                    hdf5_file.attrs['duration'] = transition_to_manual_start - run_start
         
                 error_condition = False
                 response_list = {}
