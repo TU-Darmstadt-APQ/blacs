@@ -132,7 +132,7 @@ class Plugin(object):
                 self.BLACS['experiment_queue'].prepend(h5_filepath)
             self.error_count += 1
             # refresh the locks after the shot to retry. We already keep track of the error count.
-            self.trigger_reset()
+            # self.trigger_reset()
         else:
             self.error_count = 0
         self.tab.update_failed_locks(self.error_count)
