@@ -116,9 +116,10 @@ class Plugin(object):
     @callback(priority=15)
     def shot_complete(self, h5_filepath):
         if self.pause_triggered:
+            time.sleep(1)
             self.BLACS['experiment_queue'].clean_h5_file(h5_filepath, 'temp_watchdog.h5')
             shutil.move('temp_watchdog.h5', h5_filepath)
-            if 'keepwarm' in self.BLACS['plugins'] and self.BLACS['plugins']['keepwarm'].active:
+            if 'keepwarm' in self.BLACS['plugins'] and self.BLACS['plugins']['keepwarm'].active and self.BLACS['plugins']['keepwarm'].keep_warm_file is not None:
                 # The keep warm file must always be prepended even if watchdog is active:
                 if h5_filepath == self.BLACS['plugins']['keepwarm'].keep_warm_file:
                     self.BLACS['experiment_queue'].prepend(h5_filepath)
@@ -129,19 +130,29 @@ class Plugin(object):
                     self.BLACS['experiment_queue'].prepend_second_position(h5_filepath)
             else:
                 self.BLACS['experiment_queue'].prepend(h5_filepath)
+            self.error_count += 1
+            # refresh the locks after the shot to retry. We already keep track of the error count.
+            self.trigger_reset()
+        else:
+            self.error_count = 0
+        self.tab.update_failed_locks(self.error_count)
 
     def repeat_filter(self, h5_filepath):
         return self.pause_triggered
 
     @inmain_decorator(True)
     def update_widgets(self, locks):
+        # TODO: I guess we dont want the queue to pause
+        # In this case the stuff below can be changed into a simple for loop...
         # Pause Queue if any if the lock items is checked and not locked
         if any([self.tab.controlWidget.update_item(name, lock) for name, lock in locks.items()]):
             self.pause_triggered = True
-            if 'keepwarm' in self.BLACS['plugins'] and self.BLACS['plugins']['keepwarm'].active:
-                self.BLACS['plugins']['keepwarm'].watchdog_triggered_keepwarm(True)
-            else:
-                self.BLACS['experiment_queue'].manager_paused = True
+            if self.error_count >= 10:
+                # after 10 errors, we just go into pause or keep warm
+                if 'keepwarm' in self.BLACS['plugins'] and self.BLACS['plugins']['keepwarm'].active:
+                    self.BLACS['plugins']['keepwarm'].watchdog_triggered_keepwarm(True)
+                else:
+                    self.BLACS['experiment_queue'].manager_paused = True
         else:
             self.pause_triggered = False
             if 'keepwarm' in self.BLACS['plugins'] and self.BLACS['plugins']['keepwarm'].active:
