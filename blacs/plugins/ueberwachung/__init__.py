@@ -49,6 +49,8 @@ class Plugin(object):
         self.close = False
         self.shot_file = None
         self.pause_triggered = False
+        with open("C:/Users/APQ/Desktop/ListOfWaste.txt", "a") as f:
+            f.write("\n\n New blacs instance \n\n")
 
     def get_menu_class(self):
         return None
@@ -131,6 +133,8 @@ class Plugin(object):
             else:
                 self.BLACS['experiment_queue'].prepend(h5_filepath)
             self.error_count += 1
+            with open("C:/Users/APQ/Desktop/ListOfWaste.txt", "a") as f:
+                f.write(h5_filepath + "\n ErrorCount: " +  str(self.error_count) + "\n")
             # refresh the locks after the shot to retry. We already keep track of the error count.
             self.trigger_reset()
         else:
