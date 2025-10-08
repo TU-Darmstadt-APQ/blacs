@@ -139,13 +139,14 @@ class Plugin(object):
             # refresh the locks after the shot to retry. We already keep track of the error count.
             if self.error_count < 10:
                 self.trigger_reset()
+            else:
+                with open("C:/Users/APQ/Desktop/ListOfWaste.txt", "a") as f:
+                    f.write("Failed at \n" + time.ctime() + "\n")
             self.error_count += 1
             with open("C:/Users/APQ/Desktop/ListOfWaste.txt", "a") as f:
                 f.write(" ErrorCount: " + str(self.error_count) + "\n")
         else:
             self.error_count = 0
-            with open("C:/Users/APQ/Desktop/ListOfWaste.txt", "a") as f:
-                f.write("Failed at \n" + time.ctime() + "\n")
         self.tab.update_failed_locks(self.error_count)
 
     def repeat_filter(self, h5_filepath):
