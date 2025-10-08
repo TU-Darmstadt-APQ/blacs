@@ -132,9 +132,9 @@ class Plugin(object):
                     self.BLACS['experiment_queue'].prepend_second_position(h5_filepath)
             else:
                 self.BLACS['experiment_queue'].prepend(h5_filepath)      
-            # if self.error_count == 0:
-            #     with open("C:/Users/APQ/Desktop/ListOfWaste.txt", "a") as f:
-            #         f.write(h5_filepath + "\n")# +  str(self.error_count) + "\n")
+            if self.error_count == 0:
+                with open("C:/Users/APQ/Desktop/ListOfWaste.txt", "a") as f:
+                    f.write(h5_filepath + "\n")# +  str(self.error_count) + "\n")
             # refresh the locks after the shot to retry. We already keep track of the error count.
             self.error_count += 1
             with open("C:/Users/APQ/Desktop/ListOfWaste.txt", "a") as f:
