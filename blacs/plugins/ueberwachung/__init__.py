@@ -49,6 +49,7 @@ class Plugin(object):
         self.close = False
         self.shot_file = None
         self.pause_triggered = False
+        self.error_count = 0
         with open("C:/Users/APQ/Desktop/ListOfWaste.txt", "a") as f:
             f.write("\n\nNew blacs instance \n" + time.ctime() + "\n\n")
 
