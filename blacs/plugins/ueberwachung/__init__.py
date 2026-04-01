@@ -148,7 +148,7 @@ class Plugin(object):
         # Pause Queue if any if the lock items is checked and not locked
         if any([self.tab.controlWidget.update_item(name, lock) for name, lock in locks.items()]):
             self.pause_triggered = True
-            if self.error_count >= 10:
+            if self.error_count >= 100:
                 # after 10 errors, we just go into pause or keep warm
                 if 'keepwarm' in self.BLACS['plugins'] and self.BLACS['plugins']['keepwarm'].active:
                     self.BLACS['plugins']['keepwarm'].watchdog_triggered_keepwarm(True)

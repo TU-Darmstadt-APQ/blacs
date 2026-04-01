@@ -1076,6 +1076,7 @@ class QueueManager(object):
             # Submit to the analysis server
             if send_to_analysis:
                 self.BLACS.analysis_submission.get_queue().put(['file', path])
+                self.BLACS.calibration_submission.get_queue().put(['file', path])
 
             ##########################################################################################################################################
             #                                                        Plugin callbacks                                                                #

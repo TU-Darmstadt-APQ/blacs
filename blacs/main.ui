@@ -325,6 +325,9 @@ QToolButton:hover:checked {
             <item row="5" column="1">
              <layout class="QVBoxLayout" name="analysis"/>
             </item>
+            <item row="6" column="1">
+             <layout class="QVBoxLayout" name="calibration"/>
+            </item>
             <item row="4" column="1">
              <widget class="QueueTreeview" name="treeview">
               <property name="sizePolicy">

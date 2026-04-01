@@ -95,6 +95,8 @@ from labscript_utils.labconfig import LabConfig
 from labscript_profile import hostname
 # Analysis Submission code
 from blacs.analysis_submission import AnalysisSubmission
+# Calibration Submission code
+from blacs.calibration_submission import CalibrationSubmission
 # Queue Manager Code
 from blacs.experiment_queue import QueueManager, QueueTreeview
 # Module containing hardware compatibility:
@@ -351,6 +353,16 @@ class BLACS(object):
         else:
             tab_data['BLACS settings']['analysis_data'] = eval(tab_data['BLACS settings']['analysis_data'])
         self.analysis_submission.restore_save_data(tab_data['BLACS settings']["analysis_data"])
+
+        splash.update_text("initialising calibration submission")
+        logger.info('starting calibration submission thread')
+        # setup calibration submission
+        self.calibration_submission = CalibrationSubmission(self,self.ui)
+        if 'calibration_data' not in tab_data['BLACS settings']:
+            tab_data['BLACS settings']['calibration_data'] = {}
+        else:
+            tab_data['BLACS settings']['calibration_data'] = eval(tab_data['BLACS settings']['calibration_data'])
+        self.calibration_submission.restore_save_data(tab_data['BLACS settings']["calibration_data"])
 
         splash.update_text("starting queue manager")
         logger.info('starting queue manager thread')

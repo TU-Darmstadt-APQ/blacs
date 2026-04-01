@@ -237,6 +237,7 @@ class FrontPanelSettings(object):
                                        "frame_height":abs(self.window.frameGeometry().height()-self.window.normalGeometry().height()),
                                        "frame_width":abs(self.window.frameGeometry().width()-self.window.normalGeometry().width()),
                                        "_analysis":self.blacs.analysis_submission.get_save_data(),
+                                       "_calibration":self.blacs.calibration_submission.get_save_data(),
                                        "_queue":self.blacs.queue.get_save_data(),
                                       }
         # Pane positions
@@ -393,6 +394,7 @@ class FrontPanelSettings(object):
         dataset.attrs["window_frame_width"] = window_data["_main_window"]["frame_width"]
         dataset.attrs['plugin_data'] = repr(plugin_data)
         dataset.attrs['analysis_data'] = repr(window_data["_main_window"]["_analysis"])
+        dataset.attrs['calibration_data'] = repr(window_data["_main_window"]["_calibration"])
         if save_queue_data:
             dataset.attrs['queue_data'] = repr(window_data["_main_window"]["_queue"])
         for pane_name,pane_position in window_data.items():
