@@ -376,6 +376,7 @@ class BLACS(object):
                 tab_data['BLACS settings']['queue_data'] = eval(tab_data['BLACS settings']['queue_data'])
             except NameError:
                 tab_data['BLACS settings']['queue_data'] = {}
+        # tab_data['BLACS settings']['queue_data'] = {}
         self.queue.restore_save_data(tab_data['BLACS settings']['queue_data'])
 
         blacs_data = {'exp_config':self.exp_config,
