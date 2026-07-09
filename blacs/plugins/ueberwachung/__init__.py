@@ -28,9 +28,65 @@ import ast
 import logging
 from logging.handlers import RotatingFileHandler
 from blacs.plugins import PLUGINS_DIR, callback
+import paho.mqtt.client as mqtt
+import datetime
+import json
 
 debug = True
 
+class MqttLogger(object):
+    def __init__(self, username, password, host, topic, uuid):
+        
+        self.valid = True
+        if username is None or username == "":
+            print("Username is needed for MQTT logging")
+            self.valid = False
+        if password is None or password == "":
+            print("Password is needed for MQTT logging")
+            self.valid = False
+        if host is None or host == "":
+            print("Host is needed for MQTT logging")
+            self.valid = False
+        if topic is None or topic == "":
+            print("Topic is needed for MQTT logging")
+            self.valid = False
+        if uuid is None or uuid == "":
+            print("UUID is needed for MQTT logging")
+            self.valid = False
+        
+        if self.valid:
+            self.topic = topic
+            self.uuid = uuid
+            try:
+                self.connection = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+                self.connection.username_pw_set(username, password)
+                self.connection.connect(host, 1883, 60)
+                self.connection.loop_start()
+            except Exception as e:
+                print(f"MQTT logger failed with {e}")
+                self.valid = False
+
+    def log_lock_failures(self, n):
+        if self.valid:
+            print(f"Log {n} log failures")
+            payload = {
+                "timestamp": datetime.datetime.now().timestamp(),
+                "uuid": self.uuid,
+                "sid": 0,
+                "value": n,
+                "unit": "",
+            }
+            self.connection.publish(
+                self.topic,
+                payload=json.dumps(payload),
+                qos=1,
+                retain=False,
+            )
+
+    def close(self):
+        if self.valid:
+            self.connection.loop_stop()
+            self.connection.disconnect()
 
 class Plugin(object):
     def __init__(self, initial_settings):
@@ -71,6 +127,14 @@ class Plugin(object):
 
     def plugin_setup_complete(self, BLACS):
         self.BLACS = BLACS
+
+        # mqtt connection
+        mqtt_username = self.BLACS['settings'].get_value(Setting, 'mqtt_username')
+        mqtt_password = self.BLACS['settings'].get_value(Setting, 'mqtt_password')
+        mqtt_host = self.BLACS['settings'].get_value(Setting, 'mqtt_host')
+        mqtt_topic = self.BLACS['settings'].get_value(Setting, 'mqtt_topic')
+        mqtt_uuid = self.BLACS['settings'].get_value(Setting, 'mqtt_uuid')
+        self.mqtt_logger = MqttLogger(mqtt_username, mqtt_password, mqtt_host, mqtt_topic, mqtt_uuid)
 
         self.serverlist = self.BLACS['settings'].get_value(Setting, 'server_list')
         self.mainloop_thread = threading.Thread(target=self.mainloop)
@@ -137,6 +201,7 @@ class Plugin(object):
         else:
             self.error_count = 0
         self.tab.update_failed_locks(self.error_count)
+        self.mqtt_logger.log_lock_failures(self.error_count)
 
     def repeat_filter(self, h5_filepath):
         return self.pause_triggered
@@ -173,6 +238,7 @@ class Plugin(object):
     def close(self):
         self.close = True
         self.mainloop_thread.join()
+        self.mqtt_logger.close()
 
 
 class TestTab(PluginTab):
