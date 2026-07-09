@@ -363,15 +363,15 @@ class Setting(object):
         self.widgets['server_list'] = ui.server_list
         self.widgets['server_list'].setText(str(self.data['server_list']))
         self.widgets['mqtt_username'] = ui.mqtt_username
-        self.widgets['mqtt_username'].setText(str(self.data['mqtt_username']))
+        self.widgets['mqtt_username'].setText(self.data['mqtt_username'])
         self.widgets['mqtt_password'] = ui.mqtt_password
-        self.widgets['mqtt_password'].setText(str(self.data['mqtt_password']))
+        self.widgets['mqtt_password'].setText(self.data['mqtt_password'])
         self.widgets['mqtt_host'] = ui.mqtt_host
-        self.widgets['mqtt_host'].setText(str(self.data['mqtt_host']))
+        self.widgets['mqtt_host'].setText(self.data['mqtt_host'])
         self.widgets['mqtt_topic'] = ui.mqtt_topic
-        self.widgets['mqtt_topic'].setText(str(self.data['mqtt_topic']))
+        self.widgets['mqtt_topic'].setText(self.data['mqtt_topic'])
         self.widgets['mqtt_uuid'] = ui.mqtt_uuid
-        self.widgets['mqtt_uuid'].setText(str(self.data['mqtt_uuid']))
+        self.widgets['mqtt_uuid'].setText(self.data['mqtt_uuid'])
 
         return ui, None
 
@@ -385,11 +385,11 @@ class Setting(object):
         # transfer the contents of the list store into the data store, and then return the data store
         try:
             self.data['server_list'] = ast.literal_eval(self.widgets['server_list'].toPlainText())
-            self.data['mqtt_username'] = self.widgets['mqtt_username'].toPlainText()
-            self.data['mqtt_password'] = self.widgets['mqtt_password'].toPlainText()
-            self.data['mqtt_host'] = self.widgets['mqtt_host'].toPlainText()
-            self.data['mqtt_topic'] = self.widgets['mqtt_topic'].toPlainText()
-            self.data['mqtt_uuid'] = self.widgets['mqtt_uuid'].toPlainText()
+            self.data['mqtt_username'] = self.widgets['mqtt_username'].text()
+            self.data['mqtt_password'] = self.widgets['mqtt_password'].text()
+            self.data['mqtt_host'] = self.widgets['mqtt_host'].text()
+            self.data['mqtt_topic'] = self.widgets['mqtt_topic'].text()
+            self.data['mqtt_uuid'] = self.widgets['mqtt_uuid'].text()
         except Exception:
             raise Exception("Server/Port specification probably not correct. Write >['192.168.1.xxx',31642]<")
         return self.data
