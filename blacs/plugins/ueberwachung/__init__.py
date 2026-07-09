@@ -342,6 +342,18 @@ class Setting(object):
         if 'server_list' not in self.data:
             self.data['server_list'] = []
 
+        # mqtt connection
+        if 'mqtt_username' not in self.data:
+            self.data['mqtt_username'] = ""
+        if 'mqtt_password' not in self.data:
+            self.data['mqtt_password'] = ""
+        if 'mqtt_host' not in self.data:
+            self.data['mqtt_host'] = ""
+        if 'mqtt_topic' not in self.data:
+            self.data['mqtt_topic'] = ""
+        if 'mqtt_uuid' not in self.data:
+            self.data['mqtt_uuid'] = ""
+
     # Create the GTK page, return the page and an icon to use on the label (the class name attribute will be used for the label text)
     def create_dialog(self, notebook):
         ui = UiLoader().load(os.path.join(PLUGINS_DIR, 'ueberwachung', 'servers.ui'))
@@ -350,6 +362,16 @@ class Setting(object):
         self.widgets = {}
         self.widgets['server_list'] = ui.server_list
         self.widgets['server_list'].setText(str(self.data['server_list']))
+        self.widgets['mqtt_username'] = ui.mqtt_username
+        self.widgets['mqtt_username'].setText(str(self.data['mqtt_username']))
+        self.widgets['mqtt_password'] = ui.mqtt_password
+        self.widgets['mqtt_password'].setText(str(self.data['mqtt_password']))
+        self.widgets['mqtt_host'] = ui.mqtt_host
+        self.widgets['mqtt_host'].setText(str(self.data['mqtt_host']))
+        self.widgets['mqtt_topic'] = ui.mqtt_topic
+        self.widgets['mqtt_topic'].setText(str(self.data['mqtt_topic']))
+        self.widgets['mqtt_uuid'] = ui.mqtt_uuid
+        self.widgets['mqtt_uuid'].setText(str(self.data['mqtt_uuid']))
 
         return ui, None
 
@@ -363,6 +385,11 @@ class Setting(object):
         # transfer the contents of the list store into the data store, and then return the data store
         try:
             self.data['server_list'] = ast.literal_eval(self.widgets['server_list'].toPlainText())
+            self.data['mqtt_username'] = self.widgets['mqtt_username'].toPlainText()
+            self.data['mqtt_password'] = self.widgets['mqtt_password'].toPlainText()
+            self.data['mqtt_host'] = self.widgets['mqtt_host'].toPlainText()
+            self.data['mqtt_topic'] = self.widgets['mqtt_topic'].toPlainText()
+            self.data['mqtt_uuid'] = self.widgets['mqtt_uuid'].toPlainText()
         except Exception:
             raise Exception("Server/Port specification probably not correct. Write >['192.168.1.xxx',31642]<")
         return self.data
