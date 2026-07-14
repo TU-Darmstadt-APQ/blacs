@@ -82,6 +82,8 @@ class MqttLogger(object):
                 qos=1,
                 retain=False,
             )
+        else:
+            print("Skip MQTT logging as connection is not valid")
 
     def close(self):
         if self.valid:
@@ -260,6 +262,7 @@ class TestTab(PluginTab):
         self.label = QLabel("Failed locks in a row: 0")
         self.layout.addWidget(self.label)
 
+    @inmain_decorator(True)
     def update_failed_locks(self, num):
         self.label.setText(f"Failed locks in a row: {num}")
 
