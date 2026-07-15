@@ -25,9 +25,12 @@ from .duty import (
 
 
 # Apparatus configuration. Fill in these two strings before enabling the plugin.
-THERMAL_DEVICE_NAME = 'SET_NI_DEVICE_NAME'
-THERMAL_TTL_CHANNEL = 'SET_PORT_AND_LINE'  # for example: 'port0/line3'
+THERMAL_DEVICE_NAME = 'pci_6534_1'
+THERMAL_TTL_CHANNEL = 'port1/line0'  # for example: 'port0/line3'
 ACTIVE_HIGH = True
+# For unstructured two-dimensional DO tables, use this column instead of the
+# numeric suffix of ``portN``. Leave as None for the usual port-number mapping.
+THERMAL_DO_PORT_INDEX = None
 # Absolute HDF5 path to the timestamps for the NI DO table. Set this if the
 # shot format does not use one of the automatic candidate paths below. The
 # dataset must contain either one time per DO row or interval boundaries.
@@ -55,6 +58,40 @@ def _split_ttl_channel(channel):
     if not port or line < 0:
         raise ValueError('invalid NI TTL channel %r' % channel)
     return port, line
+
+
+def _port_index(port):
+    if THERMAL_DO_PORT_INDEX is not None:
+        return THERMAL_DO_PORT_INDEX
+    try:
+        if not port.startswith('port'):
+            raise ValueError
+        return int(port[4:])
+    except ValueError:
+        raise ValueError(
+            'set THERMAL_DO_PORT_INDEX for unstructured port %r' % port
+        )
+
+
+def _packed_port_values(do_table, port):
+    """Return packed values for one NI port from either supported DO layout."""
+    if do_table.dtype.names is not None:
+        try:
+            return do_table[port][:]
+        except ValueError:
+            raise RuntimeError('DO table has no field %r' % port)
+
+    values = do_table[:]
+    if values.ndim == 1:
+        if _port_index(port) != 0:
+            raise RuntimeError('one-dimensional DO table only has port0 data')
+        return values
+    if values.ndim == 2:
+        index = _port_index(port)
+        if not 0 <= index < values.shape[1]:
+            raise RuntimeError('DO table has no column for %s' % port)
+        return values[:, index]
+    raise RuntimeError('unsupported %d-dimensional DO table' % values.ndim)
 
 
 class Plugin(object):
@@ -191,7 +228,7 @@ class Plugin(object):
         with h5py.File(h5_filepath, 'r') as h5_file:
             try:
                 do_table = h5_file['devices'][THERMAL_DEVICE_NAME]['DO']
-                packed_values = do_table[port]
+                packed_values = _packed_port_values(do_table, port)
             except KeyError:
                 raise RuntimeError(
                     'no DO table for %s on %s'
@@ -243,7 +280,7 @@ class Plugin(object):
         with h5py.File(h5_filepath, 'r') as h5_file:
             try:
                 do_table = h5_file['devices'][THERMAL_DEVICE_NAME]['DO']
-                final_port_value = int(do_table[port][-1])
+                final_port_value = int(_packed_port_values(do_table, port)[-1])
             except (KeyError, IndexError, TypeError):
                 raise RuntimeError('target final value is unavailable in the shot DO table')
         physical_level = bool(final_port_value & (1 << line))
