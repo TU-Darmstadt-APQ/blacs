@@ -15,6 +15,7 @@ DutyHistory = thermalization_duty.DutyHistory
 duty_from_trace = thermalization_duty.duty_from_trace
 duty_from_intervals = thermalization_duty.duty_from_intervals
 keep_warm_level = thermalization_duty.keep_warm_level
+keep_warm_transition_delay = thermalization_duty.keep_warm_transition_delay
 packed_ttl_levels = thermalization_duty.packed_ttl_levels
 wait_duty_seconds = thermalization_duty.wait_duty_seconds
 
@@ -223,6 +224,20 @@ class TestKeepWarmLevel(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'finite'):
             keep_warm_level(0.5, float('inf'), 10)
 
+    def test_transition_delay_tracks_cycle_edges(self):
+        self.assertEqual(keep_warm_transition_delay(0.4, 0.0, 10), 4.0)
+        self.assertAlmostEqual(
+            keep_warm_transition_delay(0.4, 3.9, 10), 0.1
+        )
+        self.assertEqual(keep_warm_transition_delay(0.4, 4.0, 10), 6.0)
+        self.assertAlmostEqual(
+            keep_warm_transition_delay(0.4, 13.9, 10), 0.1
+        )
+
+    def test_constant_duties_have_no_transition(self):
+        self.assertIsNone(keep_warm_transition_delay(0.0, 5.0, 10))
+        self.assertIsNone(keep_warm_transition_delay(1.0, 5.0, 10))
+
 
 class TestPackedTTLLevels(unittest.TestCase):
     def test_four_ports_are_combined_in_a_uint32(self):
@@ -364,6 +379,49 @@ class TestPluginStateMachine(unittest.TestCase):
 
         self.assertAlmostEqual(self.plugin.history.mean, 32.0 / 33.0)
         self.plugin._start_keep_warm.assert_called_once_with(41.0)
+
+    def test_keep_warm_edges_use_precise_epoch_based_scheduling(self):
+        self.plugin.history.append_seconds(2, 5)
+        self.plugin.keep_warm_timer = mock.Mock()
+        self.plugin._set_target_active = mock.Mock()
+
+        with mock.patch.object(
+            thermalization_plugin.time, 'monotonic', return_value=100.0
+        ):
+            self.plugin._start_keep_warm(100.0)
+        self.plugin._set_target_active.assert_called_once_with(True)
+        self.plugin.keep_warm_timer.start.assert_called_with(4000)
+
+        # A callback arriving 200 ms late is corrected against the original
+        # epoch, rather than shifting all following transitions by 200 ms.
+        self.plugin.keep_warm_timer.start.reset_mock()
+        with mock.patch.object(
+            thermalization_plugin.time, 'monotonic', return_value=104.2
+        ):
+            self.plugin._on_keep_warm_timer()
+        self.plugin._set_target_active.assert_called_with(False)
+        interval_ms = self.plugin.keep_warm_timer.start.call_args[0][0]
+        self.assertIn(interval_ms, (5800, 5801))
+
+        self.plugin.keep_warm_timer.start.reset_mock()
+        with mock.patch.object(
+            thermalization_plugin.time, 'monotonic', return_value=111.0
+        ):
+            self.plugin._on_keep_warm_timer()
+        self.plugin._set_target_active.assert_called_with(True)
+        self.plugin.keep_warm_timer.start.assert_called_with(3000)
+
+    def test_constant_keep_warm_level_does_not_arm_edge_timer(self):
+        self.plugin.history.append_seconds(0, 1)
+        self.plugin.keep_warm_timer = mock.Mock()
+        self.plugin._set_target_active = mock.Mock()
+        with mock.patch.object(
+            thermalization_plugin.time, 'monotonic', return_value=100.0
+        ):
+            self.plugin._start_keep_warm(100.0)
+        self.plugin._set_target_active.assert_called_once_with(False)
+        self.plugin.keep_warm_timer.stop.assert_called_once_with()
+        self.plugin.keep_warm_timer.start.assert_not_called()
 
     def test_interruption_waits_for_manual_mode_then_starts_keep_warm(self):
         self.plugin.current_shot = {'path': 'interrupted.h5', 'ignore': False}

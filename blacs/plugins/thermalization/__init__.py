@@ -6,6 +6,7 @@ enabling this plugin in ``[BLACS/plugins]``.
 
 import logging
 import time
+from math import ceil
 from operator import index as integer_index
 
 import labscript_utils.h5_lock  # noqa: F401 - required before importing h5py
@@ -23,6 +24,7 @@ from .duty import (
     duty_from_intervals,
     duty_from_trace,
     keep_warm_level,
+    keep_warm_transition_delay,
     packed_ttl_levels,
     wait_duty_seconds,
 )
@@ -122,6 +124,7 @@ class Plugin(object):
         self.tab = None
         self.timer = None
         self.empty_queue_timer = None
+        self.keep_warm_timer = None
 
         self.history = DutyHistory(DUTY_HISTORY_SIZE)
         self.last_shot_duty = None
@@ -192,8 +195,16 @@ class Plugin(object):
         self.empty_queue_timer.setInterval(QUEUE_EMPTY_SETTLE_MS)
         self.empty_queue_timer.timeout.connect(self._queue_empty_settled)
 
+        # Keep-warm edges are scheduled independently of the status timer so
+        # their accuracy is not quantised by TIMER_INTERVAL_MS.
+        self.keep_warm_timer = QtCore.QTimer(self.tab._ui)
+        self.keep_warm_timer.setSingleShot(True)
+        self.keep_warm_timer.setTimerType(QtCore.Qt.PreciseTimer)
+        self.keep_warm_timer.timeout.connect(self._on_keep_warm_timer)
+
         self.timer = QtCore.QTimer(self.tab._ui)
         self.timer.setInterval(TIMER_INTERVAL_MS)
+        self.timer.setTimerType(QtCore.Qt.PreciseTimer)
         self.timer.timeout.connect(self._on_timer_tick)
         self.timer.start()
         self._refresh_status()
@@ -637,12 +648,20 @@ class Plugin(object):
             self._start_keep_warm(now)
             return
 
+        self._refresh_keep_warm_status(now)
+
+    def _on_keep_warm_timer(self):
+        """Apply a scheduled TTL edge and arm the next edge."""
+        if self.keep_warm_active:
+            self._update_keep_warm_cycle(time.monotonic())
+
+    def _update_keep_warm_cycle(self, now):
+        """Set the current level and schedule the next drift-free cycle edge."""
         duty = self.history.mean
         if duty is None:
             self._set_error_main('No duty-cycle history available for keep-warm')
             return
         elapsed = now - self.keep_warm_started
-        phase = elapsed % KEEP_WARM_PERIOD_S
         should_be_active = keep_warm_level(duty, elapsed, KEEP_WARM_PERIOD_S)
         if should_be_active != self.keep_warm_output_active:
             try:
@@ -651,6 +670,25 @@ class Plugin(object):
                 self._set_error_main('Could not pulse thermal TTL: %s' % exc)
                 return
             self.keep_warm_output_active = should_be_active
+
+        # Recompute from the original monotonic epoch after the device write.
+        # This compensates for late callbacks and avoids accumulating drift.
+        schedule_time = time.monotonic()
+        schedule_elapsed = schedule_time - self.keep_warm_started
+        delay = keep_warm_transition_delay(
+            duty, schedule_elapsed, KEEP_WARM_PERIOD_S
+        )
+        if self.keep_warm_timer is not None:
+            if delay is None:
+                self.keep_warm_timer.stop()
+            else:
+                self.keep_warm_timer.start(max(1, int(ceil(1000.0 * delay))))
+        self._refresh_keep_warm_status(schedule_time)
+
+    def _refresh_keep_warm_status(self, now):
+        """Update the cycle countdown without controlling the TTL edge."""
+        elapsed = now - self.keep_warm_started
+        phase = elapsed % KEEP_WARM_PERIOD_S
         self._set_status(
             'Keep-warm',
             'Cycle resets in %.1f s' % (KEEP_WARM_PERIOD_S - phase),
@@ -667,11 +705,13 @@ class Plugin(object):
         self._set_status(
             'Keep-warm', 'Pulsing at %.1f%% duty' % (100.0 * duty)
         )
-        self._on_timer_tick()
+        self._update_keep_warm_cycle(now)
 
     def _stop_keep_warm(self):
         self.keep_warm_active = False
         self.keep_warm_output_active = None
+        if self.keep_warm_timer is not None:
+            self.keep_warm_timer.stop()
 
     def _target_tab(self):
         try:
@@ -698,8 +738,7 @@ class Plugin(object):
         inmain(self._set_error_main, message)
 
     def _set_error_main(self, message):
-        self.keep_warm_active = False
-        self.keep_warm_output_active = None
+        self._stop_keep_warm()
         self._clear_interruption()
         self._set_status('Error', message)
 
@@ -719,6 +758,8 @@ class Plugin(object):
             inmain(self.timer.stop)
         if self.empty_queue_timer is not None:
             inmain(self.empty_queue_timer.stop)
+        if self.keep_warm_timer is not None:
+            inmain(self.keep_warm_timer.stop)
 
 
 class ThermalizationTab(PluginTab):

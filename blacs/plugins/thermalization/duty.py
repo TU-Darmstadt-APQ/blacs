@@ -146,8 +146,8 @@ class DutyHistory(object):
         return sum(self._values) / len(self._values)
 
 
-def keep_warm_level(duty, elapsed, period):
-    """Return the desired active state at ``elapsed`` seconds into a cycle."""
+def _cycle_values(duty, elapsed, period):
+    """Validate and normalise keep-warm cycle inputs."""
     duty = float(duty)
     elapsed = float(elapsed)
     period = float(period)
@@ -157,4 +157,23 @@ def keep_warm_level(duty, elapsed, period):
         raise ValueError('duty must be between zero and one')
     if period <= 0:
         raise ValueError('period must be positive')
+    return duty, elapsed, period
+
+
+def keep_warm_level(duty, elapsed, period):
+    """Return the desired active state at ``elapsed`` seconds into a cycle."""
+    duty, elapsed, period = _cycle_values(duty, elapsed, period)
     return (elapsed % period) < duty * period
+
+
+def keep_warm_transition_delay(duty, elapsed, period):
+    """Return seconds until the next level change, or ``None`` if constant."""
+    duty, elapsed, period = _cycle_values(duty, elapsed, period)
+    if duty == 0.0 or duty == 1.0:
+        return None
+
+    phase = elapsed % period
+    active_duration = duty * period
+    if phase < active_duration:
+        return active_duration - phase
+    return period - phase
