@@ -23,6 +23,7 @@ from .duty import (
     duty_from_trace,
     keep_warm_level,
     packed_ttl_levels,
+    wait_duty_seconds,
 )
 
 
@@ -117,7 +118,6 @@ class Plugin(object):
         self.detail = 'Waiting for the first completed shot'
 
         self.current_shot = None
-        self.finished_shot = None
         self.pending_shot = None
         self.keep_warm_active = False
 
@@ -173,20 +173,10 @@ class Plugin(object):
         was_keep_warm = self.keep_warm_active
         inmain(self._stop_keep_warm)
         self._finalise_pending_shot(time.monotonic())
-        # A science_over without shot_complete belongs to an aborted shot.
-        self.finished_shot = None
-
-        try:
-            active_time, total_time = self._read_shot_duty(h5_filepath)
-        except Exception as exc:
-            self.current_shot = None
-            self._set_error('Could not read thermal TTL duty: %s' % exc)
-            return
-
+        # The actual wait durations are written to HDF5 only while BLACS
+        # transitions back to manual, so defer duty accounting to shot_complete.
         self.current_shot = {
             'path': h5_filepath,
-            'active_time': active_time,
-            'total_time': total_time,
             # Keep-warm can disturb the first real shot's effective duty. Its
             # programmed portion and following static interval are both ignored.
             'ignore': was_keep_warm,
@@ -202,33 +192,33 @@ class Plugin(object):
             self._refresh_status()
 
     def science_over(self, h5_filepath):
-        """Capture the final TTL value at the start of the manual transition."""
+        """Mark the beginning of the final static interval for this shot."""
         if self.current_shot is None:
             return
-        try:
-            # This callback runs in the queue-manager thread. Read the compiled
-            # final value from HDF5 rather than reading DeviceTab state, which is
-            # owned by the Qt main thread.
-            final_active = self._target_final_active_from_shot(h5_filepath)
-        except Exception as exc:
-            self.finished_shot = None
-            self._set_error('Could not read final thermal TTL value: %s' % exc)
-            return
-
-        self.finished_shot = self.current_shot.copy()
-        self.finished_shot['final_active'] = final_active
-        self.finished_shot['static_since'] = time.monotonic()
-        self.current_shot = None
+        self.current_shot['static_since'] = time.monotonic()
 
     @callback(priority=100)
     def shot_complete(self, h5_filepath):
-        """Only successful shots become eligible for the duty history."""
-        if self.finished_shot is None:
+        """Read the completed shot once its wait-monitor data has been saved."""
+        if self.current_shot is None:
             return
-        self.pending_shot = self.finished_shot
-        self.finished_shot = None
+        try:
+            active_time, total_time, final_active = self._read_shot_duty(h5_filepath)
+        except Exception as exc:
+            self.current_shot = None
+            self._set_error('Could not read completed thermal TTL duty: %s' % exc)
+            return
+
+        self.pending_shot = self.current_shot
+        self.pending_shot.update(
+            active_time=active_time,
+            total_time=total_time,
+            final_active=final_active,
+            static_since=self.pending_shot.get('static_since', time.monotonic()),
+        )
+        self.current_shot = None
         self.state = 'Monitoring'
-        self.detail = 'Including final TTL value while BLACS is idle'
+        self.detail = 'Recorded shot duty including measured waits'
         self._refresh_status()
 
     def _read_shot_duty(self, h5_filepath):
@@ -249,15 +239,46 @@ class Plugin(object):
                     % (THERMAL_TTL_CHANNEL, THERMAL_DEVICE_NAME)
                 )
             times = self._read_clock_times(h5_file, len(values))
+            wait_times, wait_durations = self._read_waits(h5_file)
 
         if len(times) == len(values):
-            return duty_from_trace(times, values, active_high=ACTIVE_HIGH)
-        if len(times) == len(values) + 1:
-            return duty_from_intervals(times, values, active_high=ACTIVE_HIGH)
-        raise RuntimeError(
-            'clock-times dataset has %d samples for %d DO rows'
-            % (len(times), len(values))
+            active_time, total_time = duty_from_trace(
+                times, values, active_high=ACTIVE_HIGH
+            )
+            value_times = times
+        elif len(times) == len(values) + 1:
+            active_time, total_time = duty_from_intervals(
+                times, values, active_high=ACTIVE_HIGH
+            )
+            value_times = times[:-1]
+        else:
+            raise RuntimeError(
+                'clock-times dataset has %d samples for %d DO rows'
+                % (len(times), len(values))
+            )
+
+        wait_active_time, wait_total_time = wait_duty_seconds(
+            value_times,
+            values,
+            wait_times,
+            wait_durations,
+            active_high=ACTIVE_HIGH,
         )
+        return (
+            active_time + wait_active_time,
+            total_time + wait_total_time,
+            bool(values[-1]) == ACTIVE_HIGH,
+        )
+
+    @staticmethod
+    def _read_waits(h5_file):
+        """Return wait-monitor timestamps and their measured durations."""
+        if 'data/waits' not in h5_file:
+            return [], []
+        waits = h5_file['data/waits'][:]
+        if 'time' not in waits.dtype.names or 'duration' not in waits.dtype.names:
+            raise RuntimeError('data/waits lacks time or duration fields')
+        return waits['time'], waits['duration']
 
     @staticmethod
     def _read_clock_times(h5_file, do_row_count):
@@ -307,23 +328,6 @@ class Plugin(object):
         except (KeyError, TypeError, AttributeError):
             # Older NI_DAQmx files packed the usual four byte-wide ports.
             return _port_index(port_name) * NI_LINES_PER_PORT + line
-
-    @staticmethod
-    def _target_final_active_from_shot(h5_filepath):
-        """Read the final packed NI digital value without touching the GUI tab."""
-        port, line = _split_ttl_channel(THERMAL_TTL_CHANNEL)
-        with h5py.File(h5_filepath, 'r') as h5_file:
-            try:
-                do_table = h5_file['devices'][THERMAL_DEVICE_NAME]['DO']
-                physical_level = _ttl_levels(
-                    do_table,
-                    port,
-                    line,
-                    Plugin._packed_bit_index(h5_file, port, line),
-                )[-1]
-            except (KeyError, IndexError, TypeError):
-                raise RuntimeError('target final value is unavailable in the shot DO table')
-        return physical_level == ACTIVE_HIGH
 
     def _finalise_pending_shot(self, now):
         shot = self.pending_shot

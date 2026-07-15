@@ -12,6 +12,7 @@ duty_from_trace = thermalization_duty.duty_from_trace
 duty_from_intervals = thermalization_duty.duty_from_intervals
 keep_warm_level = thermalization_duty.keep_warm_level
 packed_ttl_levels = thermalization_duty.packed_ttl_levels
+wait_duty_seconds = thermalization_duty.wait_duty_seconds
 
 
 class TestDutyFromTrace(unittest.TestCase):
@@ -69,6 +70,14 @@ class TestPackedTTLLevels(unittest.TestCase):
         # port1/line0 is bit 8 when each port occupies one byte.
         self.assertEqual(packed_ttl_levels([0x00000000, 0x00000100, 0x00000001], 8),
                          [False, True, False])
+
+
+class TestWaitDutySeconds(unittest.TestCase):
+    def test_wait_duration_uses_ttl_value_at_wait_time(self):
+        active, total = wait_duty_seconds(
+            [0, 2, 5], [False, True, False], [1, 3, 5], [4, 6, 2]
+        )
+        self.assertEqual((active, total), (6.0, 12.0))
 
 
 if __name__ == '__main__':

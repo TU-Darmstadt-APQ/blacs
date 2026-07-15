@@ -61,6 +61,30 @@ def packed_ttl_levels(packed_values, bit_index):
     return [bool(int(value) & (1 << bit_index)) for value in packed_values]
 
 
+def wait_duty_seconds(times, values, wait_times, wait_durations, active_high=True):
+    """Return duty seconds contributed by measured waits in a shot timeline."""
+    if len(times) != len(values) or len(times) == 0:
+        raise ValueError('wait accounting requires one time for each value')
+    if len(wait_times) != len(wait_durations):
+        raise ValueError('wait times and durations must have the same length')
+
+    active_time = 0.0
+    total_time = 0.0
+    for wait_time, duration in zip(wait_times, wait_durations):
+        duration = float(duration)
+        if duration < 0:
+            raise ValueError('wait duration must not be negative')
+        index = 0
+        for i, sample_time in enumerate(times):
+            if float(sample_time) > float(wait_time):
+                break
+            index = i
+        total_time += duration
+        if bool(values[index]) == active_high:
+            active_time += duration
+    return active_time, total_time
+
+
 class DutyHistory(object):
     """A bounded arithmetic (not time-weighted) history of shot duties."""
 
