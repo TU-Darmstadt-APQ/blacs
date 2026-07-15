@@ -120,6 +120,10 @@ class Plugin(object):
         self.current_shot = None
         self.pending_shot = None
         self.keep_warm_active = False
+        # Set from BLACS' queue pause button. The button is also updated by
+        # ExperimentQueue.manager_paused, so this covers programmatic pauses.
+        self.queue_paused = False
+        self.queue_pause_started = None
 
     # BLACS plugin boilerplate:
     def get_menu_class(self):
@@ -153,6 +157,13 @@ class Plugin(object):
         self.BLACS = BLACS
         if self.tab is None:
             raise RuntimeError('Thermalization status tab was not created')
+        try:
+            queue_pause_button = BLACS['ui'].queue_pause_button
+        except (KeyError, AttributeError):
+            logger.warning('Could not find BLACS queue pause button')
+        else:
+            self.queue_paused = queue_pause_button.isChecked()
+            queue_pause_button.toggled.connect(self._queue_pause_toggled)
         self.timer = QtCore.QTimer(self.tab._ui)
         self.timer.setInterval(TIMER_INTERVAL_MS)
         self.timer.timeout.connect(self._on_timer_tick)
@@ -220,6 +231,64 @@ class Plugin(object):
         self.state = 'Monitoring'
         self.detail = 'Recorded shot duty including measured waits'
         self._refresh_status()
+
+        # A queue pause does not interrupt a currently running shot. Once it
+        # has completed and BLACS is back in manual mode, finalise it at the
+        # pause boundary and begin pulsing without waiting for the idle timer.
+        if self.queue_paused:
+            self._begin_keep_warm_after_pause()
+
+    def _queue_pause_toggled(self, paused):
+        """React immediately when BLACS pauses or resumes the queue.
+
+        ``manager_paused`` drives this same button, so the signal covers both
+        user clicks and pauses requested by other BLACS code.
+        """
+        self.queue_paused = bool(paused)
+        if not self.queue_paused:
+            self.queue_pause_started = None
+            if self.keep_warm_active:
+                self.detail = (
+                    'Queue resumed; keep-warm continues until the next shot'
+                )
+                self._refresh_status()
+            return
+
+        self.queue_pause_started = time.monotonic()
+        if self.current_shot is not None:
+            self.state = 'Shot running'
+            self.detail = (
+                'Queue paused; keep-warm begins when the current shot completes'
+            )
+            self._refresh_status()
+            return
+        self._begin_keep_warm_after_pause()
+
+    @inmain_decorator(True)
+    def _begin_keep_warm_after_pause(self):
+        """Exclude a queue pause from the current sample and pulse promptly."""
+        # A queued pause can arrive while shot-complete is still unwinding.
+        # Do not pulse until the active shot has relinquished the buffered DO.
+        if self.current_shot is not None:
+            return
+        if self.pending_shot is None:
+            self.state = 'Monitoring'
+            self.detail = 'Queue paused; no completed shot is available yet'
+            self._refresh_status()
+            return
+        if self.keep_warm_active:
+            return
+
+        # If the pause was clicked just after science_over but before
+        # shot_complete has parsed the measured waits, keep only the static
+        # interval before the click. Conversely, a click during a real shot
+        # must not truncate that shot, hence the lower bound at static_since.
+        sample_end = max(
+            self.pending_shot['static_since'],
+            self.queue_pause_started or time.monotonic(),
+        )
+        self._finalise_pending_shot(sample_end)
+        self._start_keep_warm(time.monotonic())
 
     def _read_shot_duty(self, h5_filepath):
         """Read the packed NI values and their timestamps directly from HDF5."""
