@@ -126,7 +126,10 @@ class Plugin(object):
         self.finished_shot = None
 
         try:
-            active_time, total_time = self._read_shot_duty(h5_filepath)
+            # runviewer.Shot walks Qt-managed connection-table objects while it
+            # reconstructs a trace. Queue callbacks run in the queue-manager
+            # thread, so dispatch the complete reconstruction to the GUI thread.
+            active_time, total_time = inmain(self._read_shot_duty, h5_filepath)
         except Exception as exc:
             self.current_shot = None
             self._set_error('Could not read thermal TTL duty: %s' % exc)
