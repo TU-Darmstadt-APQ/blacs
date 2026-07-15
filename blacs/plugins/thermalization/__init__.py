@@ -50,6 +50,7 @@ TIMER_INTERVAL_MS = 200
 # Allow the queue manager to start a just-dequeued final shot, or requeue a
 # repeat, before treating an empty model as an idle queue.
 QUEUE_EMPTY_SETTLE_MS = 100
+INTERRUPTION_SETTLE_S = 0.1
 
 
 logger = logging.getLogger('BLACS.plugin.thermalization')
@@ -130,7 +131,9 @@ class Plugin(object):
         self.queue_pause_started = None
         self.queue_empty = False
         self.queue_empty_started = None
-        self.keep_warm_after_device_error = False
+        self.keep_warm_after_interruption = False
+        self.interruption_reason = None
+        self.interruption_ready_at = None
 
     # BLACS plugin boilerplate:
     def get_menu_class(self):
@@ -171,6 +174,7 @@ class Plugin(object):
         else:
             self.queue_paused = queue_pause_button.isChecked()
             queue_pause_button.toggled.connect(self._queue_pause_toggled)
+        BLACS['ui'].queue_abort_button.clicked.connect(self._abort_requested)
 
         queue_model = BLACS['experiment_queue']._model
         self.queue_empty = queue_model.rowCount() == 0
@@ -200,7 +204,9 @@ class Plugin(object):
     @callback(priority=-100)
     def pre_transition_to_buffered(self, h5_filepath):
         """End idle pulsing and prepare the next compiled shot's sample."""
-        self.keep_warm_after_device_error = False
+        self.keep_warm_after_interruption = False
+        self.interruption_reason = None
+        self.interruption_ready_at = None
         was_keep_warm = self.keep_warm_active
         inmain(self._stop_keep_warm)
         self._finalise_pending_shot(time.monotonic())
@@ -279,7 +285,7 @@ class Plugin(object):
         self.queue_pause_started = time.monotonic()
         if self.current_shot is not None:
             if self._has_device_error():
-                self._begin_keep_warm_after_device_error()
+                self._begin_keep_warm_after_interruption('Device error')
                 return
             self.state = 'Shot running'
             self.detail = (
@@ -367,9 +373,29 @@ class Plugin(object):
         except (AttributeError, KeyError):
             return False
 
-    def _begin_keep_warm_after_device_error(self):
+    def _queue_interruption_reason(self):
+        """Interpret terminal QueueManager states that end the current shot."""
+        try:
+            status = self.BLACS['experiment_queue'].get_status().lower()
+        except (AttributeError, KeyError):
+            return None
+        if 'restarted' in status:
+            return 'Device restarted'
+        if 'aborted' in status:
+            return 'Experiment aborted'
+        if 'timed out' in status:
+            return 'Experiment timed out'
+        if 'error' in status or 'failed' in status:
+            return 'Experiment failed'
+        return None
+
+    def _abort_requested(self):
+        """Mark an abort now; start only if BLACS does not run another shot."""
+        self._begin_keep_warm_after_interruption('Experiment aborted')
+
+    def _begin_keep_warm_after_interruption(self, reason):
         """Discard an interrupted shot and await manual control of the NI tab."""
-        if self.keep_warm_after_device_error or self.keep_warm_active:
+        if self.keep_warm_after_interruption or self.keep_warm_active:
             return
 
         now = time.monotonic()
@@ -378,25 +404,33 @@ class Plugin(object):
         # still be finalised exactly at the device-error boundary.
         self.current_shot = None
         self._finalise_pending_shot(now)
-        self.keep_warm_after_device_error = True
+        self.keep_warm_after_interruption = True
+        self.interruption_reason = reason
+        self.interruption_ready_at = now + INTERRUPTION_SETTLE_S
         self.state = 'Error'
-        self.detail = 'Device error detected; waiting for thermal NI manual mode'
+        self.detail = '%s; waiting for thermal NI manual mode' % reason
         self._refresh_status()
 
-    def _try_keep_warm_after_device_error(self, now):
+    def _try_keep_warm_after_interruption(self, now):
         """Start pulsing only after recovery has returned the target to manual."""
+        if now < self.interruption_ready_at:
+            return
         try:
             target_tab = self._target_tab()
         except Exception as exc:
-            self._set_error_main('Could not access thermal NI after device error: %s' % exc)
+            self._set_error_main(
+                'Could not access thermal NI after interruption: %s' % exc
+            )
             return
         if target_tab.mode != MODE_MANUAL:
             self.state = 'Error'
-            self.detail = 'Device error detected; waiting for thermal NI manual mode'
+            self.detail = '%s; waiting for thermal NI manual mode' % self.interruption_reason
             self._refresh_status()
             return
 
-        self.keep_warm_after_device_error = False
+        self.keep_warm_after_interruption = False
+        self.interruption_reason = None
+        self.interruption_ready_at = None
         self._start_keep_warm(now)
 
     def _read_shot_duty(self, h5_filepath):
@@ -529,10 +563,14 @@ class Plugin(object):
 
     def _on_timer_tick(self):
         now = time.monotonic()
-        if not self.keep_warm_active and self._has_device_error():
-            self._begin_keep_warm_after_device_error()
-        if self.keep_warm_after_device_error:
-            self._try_keep_warm_after_device_error(now)
+        if not self.keep_warm_active:
+            reason = self._queue_interruption_reason()
+            if reason is None and self._has_device_error():
+                reason = 'Device error'
+            if reason is not None:
+                self._begin_keep_warm_after_interruption(reason)
+        if self.keep_warm_after_interruption:
+            self._try_keep_warm_after_interruption(now)
             return
 
         if not self.keep_warm_active:
@@ -610,7 +648,9 @@ class Plugin(object):
     def _set_error_main(self, message):
         self.keep_warm_active = False
         self.keep_warm_output_active = None
-        self.keep_warm_after_device_error = False
+        self.keep_warm_after_interruption = False
+        self.interruption_reason = None
+        self.interruption_ready_at = None
         self.state = 'Error'
         self.detail = message
         self._refresh_status()
