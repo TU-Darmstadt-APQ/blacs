@@ -47,6 +47,9 @@ IDLE_TIMEOUT_S = 30.0
 KEEP_WARM_PERIOD_S = 10.0
 DUTY_HISTORY_SIZE = 100
 TIMER_INTERVAL_MS = 200
+# Allow the queue manager to start a just-dequeued final shot, or requeue a
+# repeat, before treating an empty model as an idle queue.
+QUEUE_EMPTY_SETTLE_MS = 100
 
 
 logger = logging.getLogger('BLACS.plugin.thermalization')
@@ -111,6 +114,7 @@ class Plugin(object):
         self.BLACS = None
         self.tab = None
         self.timer = None
+        self.empty_queue_timer = None
 
         self.history = DutyHistory(DUTY_HISTORY_SIZE)
         self.last_shot_duty = None
@@ -124,6 +128,8 @@ class Plugin(object):
         # ExperimentQueue.manager_paused, so this covers programmatic pauses.
         self.queue_paused = False
         self.queue_pause_started = None
+        self.queue_empty = False
+        self.queue_empty_started = None
 
     # BLACS plugin boilerplate:
     def get_menu_class(self):
@@ -164,6 +170,18 @@ class Plugin(object):
         else:
             self.queue_paused = queue_pause_button.isChecked()
             queue_pause_button.toggled.connect(self._queue_pause_toggled)
+
+        queue_model = BLACS['experiment_queue']._model
+        self.queue_empty = queue_model.rowCount() == 0
+        queue_model.rowsInserted.connect(self._queue_model_changed)
+        queue_model.rowsRemoved.connect(self._queue_model_changed)
+        queue_model.modelReset.connect(self._queue_model_changed)
+
+        self.empty_queue_timer = QtCore.QTimer(self.tab._ui)
+        self.empty_queue_timer.setSingleShot(True)
+        self.empty_queue_timer.setInterval(QUEUE_EMPTY_SETTLE_MS)
+        self.empty_queue_timer.timeout.connect(self._queue_empty_settled)
+
         self.timer = QtCore.QTimer(self.tab._ui)
         self.timer.setInterval(TIMER_INTERVAL_MS)
         self.timer.timeout.connect(self._on_timer_tick)
@@ -236,7 +254,9 @@ class Plugin(object):
         # has completed and BLACS is back in manual mode, finalise it at the
         # pause boundary and begin pulsing without waiting for the idle timer.
         if self.queue_paused:
-            self._begin_keep_warm_after_pause()
+            self._begin_keep_warm_after_queue_idle()
+        elif self.queue_empty:
+            self._schedule_keep_warm_for_empty_queue()
 
     def _queue_pause_toggled(self, paused):
         """React immediately when BLACS pauses or resumes the queue.
@@ -262,33 +282,74 @@ class Plugin(object):
             )
             self._refresh_status()
             return
-        self._begin_keep_warm_after_pause()
+        self._begin_keep_warm_after_queue_idle()
 
     @inmain_decorator(True)
-    def _begin_keep_warm_after_pause(self):
-        """Exclude a queue pause from the current sample and pulse promptly."""
+    def _begin_keep_warm_after_queue_idle(self):
+        """Exclude a pause or empty queue from the current sample promptly."""
         # A queued pause can arrive while shot-complete is still unwinding.
         # Do not pulse until the active shot has relinquished the buffered DO.
         if self.current_shot is not None:
             return
         if self.pending_shot is None:
             self.state = 'Monitoring'
-            self.detail = 'Queue paused; no completed shot is available yet'
+            self.detail = (
+                'Queue paused' if self.queue_paused else 'Queue empty'
+            ) + '; no completed shot is available yet'
             self._refresh_status()
             return
         if self.keep_warm_active:
             return
 
-        # If the pause was clicked just after science_over but before
-        # shot_complete has parsed the measured waits, keep only the static
-        # interval before the click. Conversely, a click during a real shot
-        # must not truncate that shot, hence the lower bound at static_since.
+        # If a pause or queue-empty event occurs just after science_over but
+        # before shot_complete has parsed the measured waits, keep only the
+        # preceding static interval. An event during a real shot must not
+        # truncate it, hence the lower bound at static_since.
+        idle_started = [
+            timestamp
+            for timestamp in (
+                self.queue_pause_started,
+                self.queue_empty_started,
+            )
+            if timestamp is not None
+        ]
         sample_end = max(
             self.pending_shot['static_since'],
-            self.queue_pause_started or time.monotonic(),
+            min(idle_started) if idle_started else time.monotonic(),
         )
         self._finalise_pending_shot(sample_end)
         self._start_keep_warm(time.monotonic())
+
+    def _queue_model_changed(self, *args):
+        """Track whether queued work remains without touching hardware yet."""
+        is_empty = self.BLACS['experiment_queue']._model.rowCount() == 0
+        if is_empty:
+            if not self.queue_empty:
+                self.queue_empty_started = time.monotonic()
+            self.queue_empty = True
+            # The final row is removed before its shot starts. Defer the
+            # decision briefly so pre_transition_to_buffered can mark it as
+            # active, and so repeat mode can reinsert it.
+            if self.pending_shot is not None:
+                self._schedule_keep_warm_for_empty_queue()
+            return
+
+        self.queue_empty = False
+        self.queue_empty_started = None
+
+    @inmain_decorator(True)
+    def _schedule_keep_warm_for_empty_queue(self):
+        if self.empty_queue_timer is not None:
+            self.empty_queue_timer.start()
+
+    def _queue_empty_settled(self):
+        if (
+            self.queue_empty
+            and self.current_shot is None
+            and self.pending_shot is not None
+            and not self.keep_warm_active
+        ):
+            self._begin_keep_warm_after_queue_idle()
 
     def _read_shot_duty(self, h5_filepath):
         """Read the packed NI values and their timestamps directly from HDF5."""
@@ -513,6 +574,8 @@ class Plugin(object):
     def close(self):
         if self.timer is not None:
             inmain(self.timer.stop)
+        if self.empty_queue_timer is not None:
+            inmain(self.empty_queue_timer.stop)
 
 
 class ThermalizationTab(PluginTab):
