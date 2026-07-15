@@ -130,6 +130,7 @@ class Plugin(object):
         self.queue_pause_started = None
         self.queue_empty = False
         self.queue_empty_started = None
+        self.keep_warm_after_device_error = False
 
     # BLACS plugin boilerplate:
     def get_menu_class(self):
@@ -199,6 +200,7 @@ class Plugin(object):
     @callback(priority=-100)
     def pre_transition_to_buffered(self, h5_filepath):
         """End idle pulsing and prepare the next compiled shot's sample."""
+        self.keep_warm_after_device_error = False
         was_keep_warm = self.keep_warm_active
         inmain(self._stop_keep_warm)
         self._finalise_pending_shot(time.monotonic())
@@ -276,6 +278,9 @@ class Plugin(object):
 
         self.queue_pause_started = time.monotonic()
         if self.current_shot is not None:
+            if self._has_device_error():
+                self._begin_keep_warm_after_device_error()
+                return
             self.state = 'Shot running'
             self.detail = (
                 'Queue paused; keep-warm begins when the current shot completes'
@@ -350,6 +355,49 @@ class Plugin(object):
             and not self.keep_warm_active
         ):
             self._begin_keep_warm_after_queue_idle()
+
+    def _has_device_error(self):
+        """Return whether a BLACS device tab reports an active error."""
+        try:
+            tablist = self.BLACS['experiment_queue'].BLACS.tablist
+            return any(
+                tab.error_message or tab.state == 'fatal error'
+                for tab in tablist.values()
+            )
+        except (AttributeError, KeyError):
+            return False
+
+    def _begin_keep_warm_after_device_error(self):
+        """Discard an interrupted shot and await manual control of the NI tab."""
+        if self.keep_warm_after_device_error or self.keep_warm_active:
+            return
+
+        now = time.monotonic()
+        # An interrupted shot has no trustworthy recorded duration, so it
+        # must never enter the duty history. A preceding completed shot can
+        # still be finalised exactly at the device-error boundary.
+        self.current_shot = None
+        self._finalise_pending_shot(now)
+        self.keep_warm_after_device_error = True
+        self.state = 'Error'
+        self.detail = 'Device error detected; waiting for thermal NI manual mode'
+        self._refresh_status()
+
+    def _try_keep_warm_after_device_error(self, now):
+        """Start pulsing only after recovery has returned the target to manual."""
+        try:
+            target_tab = self._target_tab()
+        except Exception as exc:
+            self._set_error_main('Could not access thermal NI after device error: %s' % exc)
+            return
+        if target_tab.mode != MODE_MANUAL:
+            self.state = 'Error'
+            self.detail = 'Device error detected; waiting for thermal NI manual mode'
+            self._refresh_status()
+            return
+
+        self.keep_warm_after_device_error = False
+        self._start_keep_warm(now)
 
     def _read_shot_duty(self, h5_filepath):
         """Read the packed NI values and their timestamps directly from HDF5."""
@@ -481,6 +529,12 @@ class Plugin(object):
 
     def _on_timer_tick(self):
         now = time.monotonic()
+        if not self.keep_warm_active and self._has_device_error():
+            self._begin_keep_warm_after_device_error()
+        if self.keep_warm_after_device_error:
+            self._try_keep_warm_after_device_error(now)
+            return
+
         if not self.keep_warm_active:
             if self.pending_shot is None:
                 self._refresh_status()
@@ -556,6 +610,7 @@ class Plugin(object):
     def _set_error_main(self, message):
         self.keep_warm_active = False
         self.keep_warm_output_active = None
+        self.keep_warm_after_device_error = False
         self.state = 'Error'
         self.detail = message
         self._refresh_status()
