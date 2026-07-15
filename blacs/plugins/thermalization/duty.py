@@ -6,8 +6,7 @@ from collections import deque
 def duty_from_trace(times, values, active_high=True):
     """Return ``(active_time, total_time)`` for a piecewise-constant trace.
 
-    Each value applies from its timestamp up to the following timestamp. This
-    is the representation returned by runviewer for a digital output trace.
+    Each value applies from its timestamp up to the following timestamp.
     """
     if len(times) != len(values):
         raise ValueError('times and values must have the same length')
@@ -29,6 +28,29 @@ def duty_from_trace(times, values, active_high=True):
 
     if total_time <= 0:
         raise ValueError('trace has no elapsed time')
+    return active_time, total_time
+
+
+def duty_from_intervals(boundaries, values, active_high=True):
+    """Return duty seconds where every value has an explicit time interval."""
+    if len(boundaries) != len(values) + 1:
+        raise ValueError('interval boundaries must have one more item than values')
+
+    active_time = 0.0
+    total_time = 0.0
+    previous_time = float(boundaries[0])
+    for time, value in zip(boundaries[1:], values):
+        time = float(time)
+        duration = time - previous_time
+        if duration < 0:
+            raise ValueError('interval boundaries must be monotonic')
+        total_time += duration
+        if bool(value) == active_high:
+            active_time += duration
+        previous_time = time
+
+    if total_time <= 0:
+        raise ValueError('intervals have no elapsed time')
     return active_time, total_time
 
 

@@ -9,6 +9,7 @@ thermalization_duty = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(thermalization_duty)
 DutyHistory = thermalization_duty.DutyHistory
 duty_from_trace = thermalization_duty.duty_from_trace
+duty_from_intervals = thermalization_duty.duty_from_intervals
 keep_warm_level = thermalization_duty.keep_warm_level
 
 
@@ -26,6 +27,11 @@ class TestDutyFromTrace(unittest.TestCase):
 
     def test_active_low(self):
         self.assertEqual(duty_from_trace([0, 4], [0, 0], active_high=False), (4.0, 4.0))
+
+    def test_explicit_interval_boundaries(self):
+        active, total = duty_from_intervals([0, 2, 5, 8], [1, 0, 1])
+        self.assertEqual(total, 8.0)
+        self.assertEqual(active, 5.0)
 
 
 class TestDutyHistory(unittest.TestCase):

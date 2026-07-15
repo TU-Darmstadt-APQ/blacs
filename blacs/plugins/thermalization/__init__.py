@@ -16,13 +16,22 @@ from qtutils.qt import QtCore, QtWidgets
 from blacs.plugins import callback
 from blacs.tab_base_classes import MODE_MANUAL, PluginTab
 
-from .duty import DutyHistory, duty_from_trace, keep_warm_level
+from .duty import (
+    DutyHistory,
+    duty_from_intervals,
+    duty_from_trace,
+    keep_warm_level,
+)
 
 
 # Apparatus configuration. Fill in these two strings before enabling the plugin.
 THERMAL_DEVICE_NAME = 'SET_NI_DEVICE_NAME'
 THERMAL_TTL_CHANNEL = 'SET_PORT_AND_LINE'  # for example: 'port0/line3'
 ACTIVE_HIGH = True
+# Absolute HDF5 path to the timestamps for the NI DO table. Set this if the
+# shot format does not use one of the automatic candidate paths below. The
+# dataset must contain either one time per DO row or interval boundaries.
+THERMAL_CLOCK_TIMES_DATASET = None
 
 # Thermalisation policy.
 IDLE_TIMEOUT_S = 30.0
@@ -32,10 +41,6 @@ TIMER_INTERVAL_MS = 200
 
 
 logger = logging.getLogger('BLACS.plugin.thermalization')
-
-
-def _as_text(value):
-    return value.decode() if isinstance(value, bytes) else str(value)
 
 
 def _split_ttl_channel(channel):
@@ -126,10 +131,7 @@ class Plugin(object):
         self.finished_shot = None
 
         try:
-            # runviewer.Shot walks Qt-managed connection-table objects while it
-            # reconstructs a trace. Queue callbacks run in the queue-manager
-            # thread, so dispatch the complete reconstruction to the GUI thread.
-            active_time, total_time = inmain(self._read_shot_duty, h5_filepath)
+            active_time, total_time = self._read_shot_duty(h5_filepath)
         except Exception as exc:
             self.current_shot = None
             self._set_error('Could not read thermal TTL duty: %s' % exc)
@@ -184,38 +186,54 @@ class Plugin(object):
         self._refresh_status()
 
     def _read_shot_duty(self, h5_filepath):
-        """Use runviewer to reconstruct the NI trace from the shot program."""
-        try:
-            from runviewer.__main__ import Shot
-        except ImportError as exc:
-            raise RuntimeError('runviewer is required to reconstruct NI timing') from exc
+        """Read the packed NI values and their timestamps directly from HDF5."""
+        port, line = _split_ttl_channel(THERMAL_TTL_CHANNEL)
+        with h5py.File(h5_filepath, 'r') as h5_file:
+            try:
+                do_table = h5_file['devices'][THERMAL_DEVICE_NAME]['DO']
+                packed_values = do_table[port]
+            except KeyError:
+                raise RuntimeError(
+                    'no DO table for %s on %s'
+                    % (THERMAL_TTL_CHANNEL, THERMAL_DEVICE_NAME)
+                )
+            values = [bool(int(value) & (1 << line)) for value in packed_values]
+            times = self._read_clock_times(h5_file, len(values))
 
-        trace_name = self._target_trace_name(h5_filepath)
-        shot = Shot(h5_filepath)
-        # Recent runviewer releases construct traces lazily; older releases do
-        # so in Shot.__init__. Supporting both avoids a version-specific parser.
-        get_traces = getattr(shot, 'get_traces', None)
-        if get_traces is not None:
-            get_traces()
-        traces = shot.traces
-        if trace_name not in traces:
-            raise RuntimeError('runviewer did not produce trace %r' % trace_name)
-        times, values = traces[trace_name]
-        return duty_from_trace(times, values, active_high=ACTIVE_HIGH)
+        if len(times) == len(values):
+            return duty_from_trace(times, values, active_high=ACTIVE_HIGH)
+        if len(times) == len(values) + 1:
+            return duty_from_intervals(times, values, active_high=ACTIVE_HIGH)
+        raise RuntimeError(
+            'clock-times dataset has %d samples for %d DO rows'
+            % (len(times), len(values))
+        )
 
     @staticmethod
-    def _target_trace_name(h5_filepath):
-        """Map the configured NI hardware channel to its labscript output name."""
-        with h5py.File(h5_filepath, 'r') as h5_file:
-            table = h5_file['connection table']
-            for row in table:
-                parent = _as_text(row['parent'])
-                parent_port = _as_text(row['parent port'])
-                if parent == THERMAL_DEVICE_NAME and parent_port == THERMAL_TTL_CHANNEL:
-                    return _as_text(row['name'])
+    def _read_clock_times(h5_file, do_row_count):
+        """Load direct timing data for the NI DO table from the shot file."""
+        if THERMAL_CLOCK_TIMES_DATASET is not None:
+            candidate_paths = [THERMAL_CLOCK_TIMES_DATASET]
+        else:
+            device_path = 'devices/%s' % THERMAL_DEVICE_NAME
+            candidate_paths = [
+                device_path + '/CLOCK_TIMES',
+                device_path + '/clock_times',
+                device_path + '/times',
+            ]
+
+        for path in candidate_paths:
+            if path in h5_file:
+                times = h5_file[path][:]
+                if len(times) in (do_row_count, do_row_count + 1):
+                    return times
+                raise RuntimeError(
+                    'clock-times dataset %r has %d samples for %d DO rows'
+                    % (path, len(times), do_row_count)
+                )
+
         raise RuntimeError(
-            'no connection-table output for %s on %s'
-            % (THERMAL_TTL_CHANNEL, THERMAL_DEVICE_NAME)
+            'no direct clock-times dataset found; set THERMAL_CLOCK_TIMES_DATASET'
         )
 
     @staticmethod
