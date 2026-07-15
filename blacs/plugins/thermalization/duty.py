@@ -54,6 +54,13 @@ def duty_from_intervals(boundaries, values, active_high=True):
     return active_time, total_time
 
 
+def packed_ttl_levels(packed_values, bit_index):
+    """Unpack one TTL bit from a sequence of packed integer words."""
+    if bit_index < 0:
+        raise ValueError('bit index must be non-negative')
+    return [bool(int(value) & (1 << bit_index)) for value in packed_values]
+
+
 class DutyHistory(object):
     """A bounded arithmetic (not time-weighted) history of shot duties."""
 

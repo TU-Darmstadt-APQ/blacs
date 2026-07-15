@@ -9,6 +9,7 @@ import time
 
 import labscript_utils.h5_lock  # noqa: F401 - required before importing h5py
 import h5py
+import labscript_utils.properties as properties
 
 from qtutils import inmain, inmain_decorator
 from qtutils.qt import QtCore, QtWidgets
@@ -21,6 +22,7 @@ from .duty import (
     duty_from_intervals,
     duty_from_trace,
     keep_warm_level,
+    packed_ttl_levels,
 )
 
 
@@ -31,6 +33,9 @@ ACTIVE_HIGH = True
 # For unstructured two-dimensional DO tables, use this column instead of the
 # numeric suffix of ``portN``. Leave as None for the usual port-number mapping.
 THERMAL_DO_PORT_INDEX = None
+# Fallback used only for legacy shot files lacking the connection-table ports
+# property. Current NI_DAQmx shots derive offsets from that property instead.
+NI_LINES_PER_PORT = 8
 # Absolute HDF5 path to the timestamps for the NI DO table. Set this if the
 # shot format does not use one of the automatic candidate paths below. The
 # dataset must contain either one time per DO row or interval boundaries.
@@ -73,25 +78,29 @@ def _port_index(port):
         )
 
 
-def _packed_port_values(do_table, port):
-    """Return packed values for one NI port from either supported DO layout."""
+def _ttl_levels(do_table, port, line, packed_bit_index=None):
+    """Return physical TTL levels from structured or packed NI DO tables."""
     if do_table.dtype.names is not None:
         try:
-            return do_table[port][:]
+            packed_values = do_table[port][:]
         except ValueError:
             raise RuntimeError('DO table has no field %r' % port)
+        bit_index = line
+    else:
+        values = do_table[:]
+        if values.ndim == 1:
+            packed_values = values
+            bit_index = packed_bit_index
+        elif values.ndim == 2:
+            index = _port_index(port)
+            if not 0 <= index < values.shape[1]:
+                raise RuntimeError('DO table has no column for %s' % port)
+            packed_values = values[:, index]
+            bit_index = line
+        else:
+            raise RuntimeError('unsupported %d-dimensional DO table' % values.ndim)
 
-    values = do_table[:]
-    if values.ndim == 1:
-        if _port_index(port) != 0:
-            raise RuntimeError('one-dimensional DO table only has port0 data')
-        return values
-    if values.ndim == 2:
-        index = _port_index(port)
-        if not 0 <= index < values.shape[1]:
-            raise RuntimeError('DO table has no column for %s' % port)
-        return values[:, index]
-    raise RuntimeError('unsupported %d-dimensional DO table' % values.ndim)
+    return packed_ttl_levels(packed_values, bit_index)
 
 
 class Plugin(object):
@@ -228,13 +237,17 @@ class Plugin(object):
         with h5py.File(h5_filepath, 'r') as h5_file:
             try:
                 do_table = h5_file['devices'][THERMAL_DEVICE_NAME]['DO']
-                packed_values = _packed_port_values(do_table, port)
+                values = _ttl_levels(
+                    do_table,
+                    port,
+                    line,
+                    self._packed_bit_index(h5_file, port, line),
+                )
             except KeyError:
                 raise RuntimeError(
                     'no DO table for %s on %s'
                     % (THERMAL_TTL_CHANNEL, THERMAL_DEVICE_NAME)
                 )
-            values = [bool(int(value) & (1 << line)) for value in packed_values]
             times = self._read_clock_times(h5_file, len(values))
 
         if len(times) == len(values):
@@ -254,6 +267,7 @@ class Plugin(object):
         else:
             device_path = 'devices/%s' % THERMAL_DEVICE_NAME
             candidate_paths = [
+                device_path + '/TIMES',
                 device_path + '/CLOCK_TIMES',
                 device_path + '/clock_times',
                 device_path + '/times',
@@ -274,16 +288,41 @@ class Plugin(object):
         )
 
     @staticmethod
+    def _packed_bit_index(h5_file, port_name, line):
+        """Find a packed DO bit offset using NI_DAQmx's stored port layout."""
+        try:
+            connection_properties = properties.get(
+                h5_file, THERMAL_DEVICE_NAME, 'connection_table_properties'
+            )
+            offset = 0
+            for name, port in connection_properties['ports'].items():
+                if not port['supports_buffered']:
+                    continue
+                if name == port_name:
+                    if not 0 <= line < port['num_lines']:
+                        raise RuntimeError('line%d is outside %s' % (line, port_name))
+                    return offset + line
+                offset += port['num_lines']
+            raise RuntimeError('%s is not a buffered NI port' % port_name)
+        except (KeyError, TypeError, AttributeError):
+            # Older NI_DAQmx files packed the usual four byte-wide ports.
+            return _port_index(port_name) * NI_LINES_PER_PORT + line
+
+    @staticmethod
     def _target_final_active_from_shot(h5_filepath):
         """Read the final packed NI digital value without touching the GUI tab."""
         port, line = _split_ttl_channel(THERMAL_TTL_CHANNEL)
         with h5py.File(h5_filepath, 'r') as h5_file:
             try:
                 do_table = h5_file['devices'][THERMAL_DEVICE_NAME]['DO']
-                final_port_value = int(_packed_port_values(do_table, port)[-1])
+                physical_level = _ttl_levels(
+                    do_table,
+                    port,
+                    line,
+                    Plugin._packed_bit_index(h5_file, port, line),
+                )[-1]
             except (KeyError, IndexError, TypeError):
                 raise RuntimeError('target final value is unavailable in the shot DO table')
-        physical_level = bool(final_port_value & (1 << line))
         return physical_level == ACTIVE_HIGH
 
     def _finalise_pending_shot(self, now):

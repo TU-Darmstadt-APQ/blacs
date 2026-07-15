@@ -11,6 +11,7 @@ DutyHistory = thermalization_duty.DutyHistory
 duty_from_trace = thermalization_duty.duty_from_trace
 duty_from_intervals = thermalization_duty.duty_from_intervals
 keep_warm_level = thermalization_duty.keep_warm_level
+packed_ttl_levels = thermalization_duty.packed_ttl_levels
 
 
 class TestDutyFromTrace(unittest.TestCase):
@@ -61,6 +62,13 @@ class TestKeepWarmLevel(unittest.TestCase):
         self.assertFalse(keep_warm_level(0.0, 9.9, 10))
         self.assertTrue(keep_warm_level(1.0, 0.0, 10))
         self.assertTrue(keep_warm_level(1.0, 9.9, 10))
+
+
+class TestPackedTTLLevels(unittest.TestCase):
+    def test_four_ports_are_combined_in_a_uint32(self):
+        # port1/line0 is bit 8 when each port occupies one byte.
+        self.assertEqual(packed_ttl_levels([0x00000000, 0x00000100, 0x00000001], 8),
+                         [False, True, False])
 
 
 if __name__ == '__main__':
