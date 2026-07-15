@@ -6,6 +6,7 @@ enabling this plugin in ``[BLACS/plugins]``.
 
 import logging
 import time
+from operator import index as integer_index
 
 import labscript_utils.h5_lock  # noqa: F401 - required before importing h5py
 import h5py
@@ -72,7 +73,13 @@ def _split_ttl_channel(channel):
 
 def _port_index(port):
     if THERMAL_DO_PORT_INDEX is not None:
-        return THERMAL_DO_PORT_INDEX
+        try:
+            index = integer_index(THERMAL_DO_PORT_INDEX)
+        except TypeError:
+            raise ValueError('THERMAL_DO_PORT_INDEX must be an integer or None')
+        if index < 0:
+            raise ValueError('THERMAL_DO_PORT_INDEX must be non-negative')
+        return index
     try:
         if not port.startswith('port'):
             raise ValueError
@@ -86,10 +93,9 @@ def _port_index(port):
 def _ttl_levels(do_table, port, line, packed_bit_index=None):
     """Return physical TTL levels from structured or packed NI DO tables."""
     if do_table.dtype.names is not None:
-        try:
-            packed_values = do_table[port][:]
-        except ValueError:
+        if port not in do_table.dtype.names:
             raise RuntimeError('DO table has no field %r' % port)
+        packed_values = do_table[port][:]
         bit_index = line
     else:
         values = do_table[:]
@@ -131,7 +137,6 @@ class Plugin(object):
         self.queue_pause_started = None
         self.queue_empty = False
         self.queue_empty_started = None
-        self.keep_warm_after_interruption = False
         self.interruption_reason = None
         self.interruption_ready_at = None
 
@@ -201,12 +206,21 @@ class Plugin(object):
             'shot_complete': self.shot_complete,
         }
 
+    def _set_status(self, state, detail):
+        """Update the status model and its tab together."""
+        self.state = state
+        self.detail = detail
+        self._refresh_status()
+
+    def _clear_interruption(self):
+        """Clear the pending-interruption marker and its retry deadline."""
+        self.interruption_reason = None
+        self.interruption_ready_at = None
+
     @callback(priority=-100)
     def pre_transition_to_buffered(self, h5_filepath):
         """End idle pulsing and prepare the next compiled shot's sample."""
-        self.keep_warm_after_interruption = False
-        self.interruption_reason = None
-        self.interruption_ready_at = None
+        self._clear_interruption()
         was_keep_warm = self.keep_warm_active
         inmain(self._stop_keep_warm)
         self._finalise_pending_shot(time.monotonic())
@@ -218,15 +232,13 @@ class Plugin(object):
             # programmed portion and following static interval are both ignored.
             'ignore': was_keep_warm,
         }
-        self.state = 'Shot running'
-        self.detail = 'Prepared duty sample for queued shot'
-        self._refresh_status()
+        self._set_status('Shot running', 'Prepared duty sample for queued shot')
 
     def science_starting(self, h5_filepath):
         if self.current_shot is not None:
-            self.state = 'Shot running'
-            self.detail = 'Thermal TTL is controlled by the buffered shot'
-            self._refresh_status()
+            self._set_status(
+                'Shot running', 'Thermal TTL is controlled by the buffered shot'
+            )
 
     def science_over(self, h5_filepath):
         """Mark the beginning of the final static interval for this shot."""
@@ -254,9 +266,9 @@ class Plugin(object):
             static_since=self.pending_shot.get('static_since', time.monotonic()),
         )
         self.current_shot = None
-        self.state = 'Monitoring'
-        self.detail = 'Recorded shot duty including measured waits'
-        self._refresh_status()
+        self._set_status(
+            'Monitoring', 'Recorded shot duty including measured waits'
+        )
 
         # A queue pause does not interrupt a currently running shot. Once it
         # has completed and BLACS is back in manual mode, finalise it at the
@@ -276,10 +288,10 @@ class Plugin(object):
         if not self.queue_paused:
             self.queue_pause_started = None
             if self.keep_warm_active:
-                self.detail = (
-                    'Queue resumed; keep-warm continues until the next shot'
+                self._set_status(
+                    self.state,
+                    'Queue resumed; keep-warm continues until the next shot',
                 )
-                self._refresh_status()
             return
 
         self.queue_pause_started = time.monotonic()
@@ -287,11 +299,10 @@ class Plugin(object):
             if self._has_device_error():
                 self._begin_keep_warm_after_interruption('Device error')
                 return
-            self.state = 'Shot running'
-            self.detail = (
-                'Queue paused; keep-warm begins when the current shot completes'
+            self._set_status(
+                'Shot running',
+                'Queue paused; keep-warm begins when the current shot completes',
             )
-            self._refresh_status()
             return
         self._begin_keep_warm_after_queue_idle()
 
@@ -303,11 +314,10 @@ class Plugin(object):
         if self.current_shot is not None:
             return
         if self.pending_shot is None:
-            self.state = 'Monitoring'
-            self.detail = (
-                'Queue paused' if self.queue_paused else 'Queue empty'
-            ) + '; no completed shot is available yet'
-            self._refresh_status()
+            reason = 'Queue paused' if self.queue_paused else 'Queue empty'
+            self._set_status(
+                'Monitoring', reason + '; no completed shot is available yet'
+            )
             return
         if self.keep_warm_active:
             return
@@ -395,7 +405,7 @@ class Plugin(object):
 
     def _begin_keep_warm_after_interruption(self, reason):
         """Discard an interrupted shot and await manual control of the NI tab."""
-        if self.keep_warm_after_interruption or self.keep_warm_active:
+        if self.interruption_reason is not None or self.keep_warm_active:
             return
 
         now = time.monotonic()
@@ -404,15 +414,16 @@ class Plugin(object):
         # still be finalised exactly at the device-error boundary.
         self.current_shot = None
         self._finalise_pending_shot(now)
-        self.keep_warm_after_interruption = True
         self.interruption_reason = reason
         self.interruption_ready_at = now + INTERRUPTION_SETTLE_S
-        self.state = 'Error'
-        self.detail = '%s; waiting for thermal NI manual mode' % reason
-        self._refresh_status()
+        self._set_status(
+            'Error', '%s; waiting for thermal NI manual mode' % reason
+        )
 
     def _try_keep_warm_after_interruption(self, now):
         """Start pulsing only after recovery has returned the target to manual."""
+        if self.interruption_reason is None:
+            return
         if now < self.interruption_ready_at:
             return
         try:
@@ -423,36 +434,59 @@ class Plugin(object):
             )
             return
         if target_tab.mode != MODE_MANUAL:
-            self.state = 'Error'
-            self.detail = '%s; waiting for thermal NI manual mode' % self.interruption_reason
-            self._refresh_status()
+            self._set_status(
+                'Error',
+                '%s; waiting for thermal NI manual mode'
+                % self.interruption_reason,
+            )
             return
 
-        self.keep_warm_after_interruption = False
-        self.interruption_reason = None
-        self.interruption_ready_at = None
+        self._clear_interruption()
         self._start_keep_warm(now)
 
     def _read_shot_duty(self, h5_filepath):
         """Read the packed NI values and their timestamps directly from HDF5."""
-        port, line = _split_ttl_channel(THERMAL_TTL_CHANNEL)
         with h5py.File(h5_filepath, 'r') as h5_file:
-            try:
-                do_table = h5_file['devices'][THERMAL_DEVICE_NAME]['DO']
-                values = _ttl_levels(
-                    do_table,
-                    port,
-                    line,
-                    self._packed_bit_index(h5_file, port, line),
-                )
-            except KeyError:
-                raise RuntimeError(
-                    'no DO table for %s on %s'
-                    % (THERMAL_TTL_CHANNEL, THERMAL_DEVICE_NAME)
-                )
+            values = self._read_ttl_levels(h5_file)
             times = self._read_clock_times(h5_file, len(values))
             wait_times, wait_durations = self._read_waits(h5_file)
 
+        active_time, total_time, value_times = self._trace_duty(times, values)
+        wait_active_time, wait_total_time = wait_duty_seconds(
+            value_times,
+            values,
+            wait_times,
+            wait_durations,
+            active_high=ACTIVE_HIGH,
+        )
+        return (
+            active_time + wait_active_time,
+            total_time + wait_total_time,
+            bool(values[-1]) == ACTIVE_HIGH,
+        )
+
+    def _read_ttl_levels(self, h5_file):
+        """Read the configured physical TTL from an NI digital-output table."""
+        port, line = _split_ttl_channel(THERMAL_TTL_CHANNEL)
+        try:
+            do_table = h5_file['devices'][THERMAL_DEVICE_NAME]['DO']
+        except KeyError:
+            raise RuntimeError(
+                'no DO table for %s on %s'
+                % (THERMAL_TTL_CHANNEL, THERMAL_DEVICE_NAME)
+            )
+
+        packed_bit_index = None
+        if do_table.dtype.names is None and do_table.ndim == 1:
+            packed_bit_index = self._packed_bit_index(h5_file, port, line)
+        values = _ttl_levels(do_table, port, line, packed_bit_index)
+        if not values:
+            raise RuntimeError('DO table for %s is empty' % THERMAL_DEVICE_NAME)
+        return values
+
+    @staticmethod
+    def _trace_duty(times, values):
+        """Return programmed duty seconds and the timestamp for each DO value."""
         if len(times) == len(values):
             active_time, total_time = duty_from_trace(
                 times, values, active_high=ACTIVE_HIGH
@@ -468,19 +502,7 @@ class Plugin(object):
                 'clock-times dataset has %d samples for %d DO rows'
                 % (len(times), len(values))
             )
-
-        wait_active_time, wait_total_time = wait_duty_seconds(
-            value_times,
-            values,
-            wait_times,
-            wait_durations,
-            active_high=ACTIVE_HIGH,
-        )
-        return (
-            active_time + wait_active_time,
-            total_time + wait_total_time,
-            bool(values[-1]) == ACTIVE_HIGH,
-        )
+        return active_time, total_time, value_times
 
     @staticmethod
     def _read_waits(h5_file):
@@ -488,7 +510,8 @@ class Plugin(object):
         if 'data/waits' not in h5_file:
             return [], []
         waits = h5_file['data/waits'][:]
-        if 'time' not in waits.dtype.names or 'duration' not in waits.dtype.names:
+        field_names = waits.dtype.names or ()
+        if 'time' not in field_names or 'duration' not in field_names:
             raise RuntimeError('data/waits lacks time or duration fields')
         return waits['time'], waits['duration']
 
@@ -509,6 +532,10 @@ class Plugin(object):
         for path in candidate_paths:
             if path in h5_file:
                 times = h5_file[path][:]
+                if times.ndim != 1:
+                    raise RuntimeError(
+                        'clock-times dataset %r must be one-dimensional' % path
+                    )
                 if len(times) in (do_row_count, do_row_count + 1):
                     return times
                 raise RuntimeError(
@@ -527,19 +554,41 @@ class Plugin(object):
             connection_properties = properties.get(
                 h5_file, THERMAL_DEVICE_NAME, 'connection_table_properties'
             )
-            offset = 0
-            for name, port in connection_properties['ports'].items():
-                if not port['supports_buffered']:
-                    continue
-                if name == port_name:
-                    if not 0 <= line < port['num_lines']:
-                        raise RuntimeError('line%d is outside %s' % (line, port_name))
-                    return offset + line
-                offset += port['num_lines']
-            raise RuntimeError('%s is not a buffered NI port' % port_name)
+            ports = connection_properties['ports']
         except (KeyError, TypeError, AttributeError):
             # Older NI_DAQmx files packed the usual four byte-wide ports.
+            if line >= NI_LINES_PER_PORT:
+                raise RuntimeError(
+                    'line%d is outside legacy %s layout' % (line, port_name)
+                )
             return _port_index(port_name) * NI_LINES_PER_PORT + line
+
+        try:
+            port_items = ports.items()
+        except AttributeError:
+            raise RuntimeError('connection-table ports metadata is malformed')
+
+        offset = 0
+        for name, port in port_items:
+            try:
+                supports_buffered = port['supports_buffered']
+                num_lines = integer_index(port['num_lines'])
+            except (KeyError, TypeError):
+                raise RuntimeError(
+                    'connection-table metadata for %s is malformed' % name
+                )
+            if num_lines < 0:
+                raise RuntimeError(
+                    'connection-table metadata for %s is malformed' % name
+                )
+            if not supports_buffered:
+                continue
+            if name == port_name:
+                if not 0 <= line < num_lines:
+                    raise RuntimeError('line%d is outside %s' % (line, port_name))
+                return offset + line
+            offset += num_lines
+        raise RuntimeError('%s is not a buffered NI port' % port_name)
 
     def _finalise_pending_shot(self, now):
         shot = self.pending_shot
@@ -552,14 +601,13 @@ class Plugin(object):
         self.pending_shot = None
 
         if shot['ignore']:
-            self.detail = 'Ignored first shot after keep-warm'
+            detail = 'Ignored first shot after keep-warm'
         else:
             self.last_shot_duty = self.history.append_seconds(
                 shot['active_time'], shot['total_time']
             )
-            self.detail = 'Recorded completed shot duty'
-        self.state = 'Monitoring'
-        self._refresh_status()
+            detail = 'Recorded completed shot duty'
+        self._set_status('Monitoring', detail)
 
     def _on_timer_tick(self):
         now = time.monotonic()
@@ -569,7 +617,7 @@ class Plugin(object):
                 reason = 'Device error'
             if reason is not None:
                 self._begin_keep_warm_after_interruption(reason)
-        if self.keep_warm_after_interruption:
+        if self.interruption_reason is not None:
             self._try_keep_warm_after_interruption(now)
             return
 
@@ -579,11 +627,11 @@ class Plugin(object):
                 return
             idle_elapsed = max(0.0, now - self.pending_shot['static_since'])
             if idle_elapsed < IDLE_TIMEOUT_S:
-                self.state = 'Monitoring'
-                self.detail = 'Keep-warm starts after %.1f s idle' % (
-                    IDLE_TIMEOUT_S - idle_elapsed
+                self._set_status(
+                    'Monitoring',
+                    'Keep-warm starts after %.1f s idle'
+                    % (IDLE_TIMEOUT_S - idle_elapsed),
                 )
-                self._refresh_status()
                 return
             self._finalise_pending_shot(now)
             self._start_keep_warm(now)
@@ -603,9 +651,10 @@ class Plugin(object):
                 self._set_error_main('Could not pulse thermal TTL: %s' % exc)
                 return
             self.keep_warm_output_active = should_be_active
-        self.state = 'Keep-warm'
-        self.detail = 'Cycle resets in %.1f s' % (KEEP_WARM_PERIOD_S - phase)
-        self._refresh_status()
+        self._set_status(
+            'Keep-warm',
+            'Cycle resets in %.1f s' % (KEEP_WARM_PERIOD_S - phase),
+        )
 
     def _start_keep_warm(self, now):
         duty = self.history.mean
@@ -615,8 +664,9 @@ class Plugin(object):
         self.keep_warm_active = True
         self.keep_warm_started = now
         self.keep_warm_output_active = None
-        self.state = 'Keep-warm'
-        self.detail = 'Pulsing at %.1f%% duty' % (100.0 * duty)
+        self._set_status(
+            'Keep-warm', 'Pulsing at %.1f%% duty' % (100.0 * duty)
+        )
         self._on_timer_tick()
 
     def _stop_keep_warm(self):
@@ -627,7 +677,9 @@ class Plugin(object):
         try:
             return self.BLACS['experiment_queue'].BLACS.tablist[THERMAL_DEVICE_NAME]
         except KeyError:
-            raise RuntimeError('configured NI tab %r is not available' % THERMAL_DEVICE_NAME)
+            raise RuntimeError(
+                'configured NI tab %r is not available' % THERMAL_DEVICE_NAME
+            )
 
     @inmain_decorator(True)
     def _set_target_active(self, active):
@@ -648,12 +700,8 @@ class Plugin(object):
     def _set_error_main(self, message):
         self.keep_warm_active = False
         self.keep_warm_output_active = None
-        self.keep_warm_after_interruption = False
-        self.interruption_reason = None
-        self.interruption_ready_at = None
-        self.state = 'Error'
-        self.detail = message
-        self._refresh_status()
+        self._clear_interruption()
+        self._set_status('Error', message)
 
     @inmain_decorator(True)
     def _refresh_status(self):
