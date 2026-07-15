@@ -38,6 +38,20 @@ def _as_text(value):
     return value.decode() if isinstance(value, bytes) else str(value)
 
 
+def _split_ttl_channel(channel):
+    """Return the NI port name and line number for ``portN/lineM``."""
+    try:
+        port, line = channel.split('/line')
+        line = int(line)
+    except (AttributeError, TypeError, ValueError):
+        raise ValueError(
+            'THERMAL_TTL_CHANNEL must have the form portN/lineM, not %r' % channel
+        )
+    if not port or line < 0:
+        raise ValueError('invalid NI TTL channel %r' % channel)
+    return port, line
+
+
 class Plugin(object):
     def __init__(self, initial_settings):
         self.menu = None
@@ -141,7 +155,10 @@ class Plugin(object):
         if self.current_shot is None:
             return
         try:
-            final_active = inmain(self._target_final_active)
+            # This callback runs in the queue-manager thread. Read the compiled
+            # final value from HDF5 rather than reading DeviceTab state, which is
+            # owned by the Qt main thread.
+            final_active = self._target_final_active_from_shot(h5_filepath)
         except Exception as exc:
             self.finished_shot = None
             self._set_error('Could not read final thermal TTL value: %s' % exc)
@@ -197,6 +214,19 @@ class Plugin(object):
             'no connection-table output for %s on %s'
             % (THERMAL_TTL_CHANNEL, THERMAL_DEVICE_NAME)
         )
+
+    @staticmethod
+    def _target_final_active_from_shot(h5_filepath):
+        """Read the final packed NI digital value without touching the GUI tab."""
+        port, line = _split_ttl_channel(THERMAL_TTL_CHANNEL)
+        with h5py.File(h5_filepath, 'r') as h5_file:
+            try:
+                do_table = h5_file['devices'][THERMAL_DEVICE_NAME]['DO']
+                final_port_value = int(do_table[port][-1])
+            except (KeyError, IndexError, TypeError):
+                raise RuntimeError('target final value is unavailable in the shot DO table')
+        physical_level = bool(final_port_value & (1 << line))
+        return physical_level == ACTIVE_HIGH
 
     def _finalise_pending_shot(self, now):
         shot = self.pending_shot
@@ -276,15 +306,9 @@ class Plugin(object):
         except KeyError:
             raise RuntimeError('configured NI tab %r is not available' % THERMAL_DEVICE_NAME)
 
-    def _target_final_active(self):
-        tab = self._target_tab()
-        try:
-            physical_level = tab._final_values[THERMAL_TTL_CHANNEL]
-        except (AttributeError, KeyError):
-            raise RuntimeError('target final value is unavailable')
-        return bool(physical_level) == ACTIVE_HIGH
-
+    @inmain_decorator(True)
     def _set_target_active(self, active):
+        """Write the manual output from the Qt thread that owns the DeviceTab."""
         tab = self._target_tab()
         if tab.mode != MODE_MANUAL:
             raise RuntimeError('target tab is not in manual mode')
