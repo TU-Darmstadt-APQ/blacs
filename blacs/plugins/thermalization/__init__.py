@@ -134,6 +134,7 @@ class Plugin(object):
         self.current_shot = None
         self.pending_shot = None
         self.keep_warm_active = False
+        self.routine_paused = False
         # Set from BLACS' queue pause button. The button is also updated by
         # ExperimentQueue.manager_paused, so this covers programmatic pauses.
         self.queue_paused = False
@@ -170,6 +171,7 @@ class Plugin(object):
     def tabs_created(self, tabs_dict):
         self.tab = tabs_dict['Thermalization']
         self.tab.plugin = self
+        self.tab.pause_button.toggled.connect(self._routine_pause_toggled)
 
     def plugin_setup_complete(self, BLACS):
         self.BLACS = BLACS
@@ -227,6 +229,36 @@ class Plugin(object):
         """Clear the pending-interruption marker and its retry deadline."""
         self.interruption_reason = None
         self.interruption_ready_at = None
+
+    @inmain_decorator(True)
+    def _routine_pause_toggled(self, paused):
+        """Pause or resume keep-warm switching without changing the TTL."""
+        self.routine_paused = bool(paused)
+        if self.tab is not None:
+            self.tab.set_routine_paused(self.routine_paused)
+
+        if self.routine_paused:
+            if self.empty_queue_timer is not None:
+                self.empty_queue_timer.stop()
+            if self.keep_warm_timer is not None:
+                self.keep_warm_timer.stop()
+            self._set_status(
+                'Paused', 'Keep-warm switching paused; TTL held at current level'
+            )
+            return
+
+        self._set_status('Monitoring', 'Thermalization routine resumed')
+        now = time.monotonic()
+        if self.keep_warm_active:
+            self._update_keep_warm_cycle(now)
+        elif (
+            (self.queue_paused or self.queue_empty)
+            and self.current_shot is None
+            and self.pending_shot is not None
+        ):
+            self._begin_keep_warm_after_queue_idle()
+        else:
+            self._on_timer_tick()
 
     @callback(priority=-100)
     def pre_transition_to_buffered(self, h5_filepath):
@@ -320,6 +352,8 @@ class Plugin(object):
     @inmain_decorator(True)
     def _begin_keep_warm_after_queue_idle(self):
         """Exclude a pause or empty queue from the current sample promptly."""
+        if self.routine_paused:
+            return
         # A queued pause can arrive while shot-complete is still unwinding.
         # Do not pulse until the active shot has relinquished the buffered DO.
         if self.current_shot is not None:
@@ -371,12 +405,13 @@ class Plugin(object):
 
     @inmain_decorator(True)
     def _schedule_keep_warm_for_empty_queue(self):
-        if self.empty_queue_timer is not None:
+        if not self.routine_paused and self.empty_queue_timer is not None:
             self.empty_queue_timer.start()
 
     def _queue_empty_settled(self):
         if (
-            self.queue_empty
+            not self.routine_paused
+            and self.queue_empty
             and self.current_shot is None
             and self.pending_shot is not None
             and not self.keep_warm_active
@@ -416,7 +451,10 @@ class Plugin(object):
 
     def _begin_keep_warm_after_interruption(self, reason):
         """Discard an interrupted shot and await manual control of the NI tab."""
-        if self.interruption_reason is not None or self.keep_warm_active:
+        if (
+            self.interruption_reason is not None
+            or self.keep_warm_active
+        ):
             return
 
         now = time.monotonic()
@@ -433,7 +471,7 @@ class Plugin(object):
 
     def _try_keep_warm_after_interruption(self, now):
         """Start pulsing only after recovery has returned the target to manual."""
-        if self.interruption_reason is None:
+        if self.routine_paused or self.interruption_reason is None:
             return
         if now < self.interruption_ready_at:
             return
@@ -621,6 +659,12 @@ class Plugin(object):
         self._set_status('Monitoring', detail)
 
     def _on_timer_tick(self):
+        if self.routine_paused:
+            self._set_status(
+                'Paused', 'Keep-warm switching paused; TTL held at current level'
+            )
+            return
+
         now = time.monotonic()
         if not self.keep_warm_active:
             reason = self._queue_interruption_reason()
@@ -652,11 +696,16 @@ class Plugin(object):
 
     def _on_keep_warm_timer(self):
         """Apply a scheduled TTL edge and arm the next edge."""
-        if self.keep_warm_active:
+        if self.keep_warm_active and not self.routine_paused:
             self._update_keep_warm_cycle(time.monotonic())
 
     def _update_keep_warm_cycle(self, now):
         """Set the current level and schedule the next drift-free cycle edge."""
+        if self.routine_paused:
+            if self.keep_warm_timer is not None:
+                self.keep_warm_timer.stop()
+            return
+
         duty = self.history.mean
         if duty is None:
             self._set_error_main('No duty-cycle history available for keep-warm')
@@ -695,6 +744,8 @@ class Plugin(object):
         )
 
     def _start_keep_warm(self, now):
+        if self.routine_paused:
+            return
         duty = self.history.mean
         if duty is None:
             self._set_error_main('No duty-cycle history available for keep-warm')
@@ -772,6 +823,11 @@ class ThermalizationTab(PluginTab):
         self.last_shot_label = QtWidgets.QLabel('—')
         self.detail_label = QtWidgets.QLabel('')
         self.detail_label.setWordWrap(True)
+        self.pause_button = QtWidgets.QPushButton('Pause')
+        self.pause_button.setCheckable(True)
+        self.pause_button.setToolTip(
+            'Pause keep-warm switching and hold the thermal TTL at its current level'
+        )
 
         form = QtWidgets.QFormLayout()
         form.addRow('Status:', self.state_label)
@@ -780,7 +836,11 @@ class ThermalizationTab(PluginTab):
         form.addRow('Last shot:', self.last_shot_label)
         form.addRow('Detail:', self.detail_label)
         layout.addLayout(form)
+        layout.addWidget(self.pause_button)
         layout.addStretch(1)
+
+    def set_routine_paused(self, paused):
+        self.pause_button.setText('Resume' if paused else 'Pause')
 
     def update_status(self, state, mean, count, last_shot, detail):
         self.state_label.setText(state)

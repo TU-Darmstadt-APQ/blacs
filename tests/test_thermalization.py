@@ -423,6 +423,63 @@ class TestPluginStateMachine(unittest.TestCase):
         self.plugin.keep_warm_timer.stop.assert_called_once_with()
         self.plugin.keep_warm_timer.start.assert_not_called()
 
+    def test_routine_pause_holds_output_and_stops_edge_timer(self):
+        self.plugin.history.append_seconds(2, 5)
+        self.plugin.keep_warm_timer = mock.Mock()
+        self.plugin.empty_queue_timer = mock.Mock()
+        self.plugin._set_target_active = mock.Mock()
+
+        with mock.patch.object(
+            thermalization_plugin.time, 'monotonic', return_value=100.0
+        ):
+            self.plugin._start_keep_warm(100.0)
+        self.plugin._set_target_active.reset_mock()
+        self.plugin.keep_warm_timer.reset_mock()
+
+        self.plugin._routine_pause_toggled(True)
+        self.plugin._on_keep_warm_timer()
+        self.plugin._on_timer_tick()
+
+        self.assertTrue(self.plugin.routine_paused)
+        self.assertTrue(self.plugin.keep_warm_active)
+        self.assertEqual(self.plugin.state, 'Paused')
+        self.plugin.empty_queue_timer.stop.assert_called_once_with()
+        self.plugin.keep_warm_timer.stop.assert_called_once_with()
+        self.plugin._set_target_active.assert_not_called()
+
+    def test_routine_resume_continues_keep_warm_switching(self):
+        self.plugin.history.append_seconds(2, 5)
+        self.plugin.keep_warm_timer = mock.Mock()
+        self.plugin._set_target_active = mock.Mock()
+        self.plugin.keep_warm_active = True
+        self.plugin.keep_warm_started = 100.0
+        self.plugin.keep_warm_output_active = True
+        self.plugin.routine_paused = True
+
+        with mock.patch.object(
+            thermalization_plugin.time, 'monotonic', return_value=104.0
+        ):
+            self.plugin._routine_pause_toggled(False)
+
+        self.assertFalse(self.plugin.routine_paused)
+        self.plugin._set_target_active.assert_called_once_with(False)
+        self.plugin.keep_warm_timer.start.assert_called_once_with(6000)
+
+    def test_routine_resume_honours_queue_idle_boundary(self):
+        self.set_pending_shot()
+        self.plugin.routine_paused = True
+        self.plugin.queue_empty = True
+        self.plugin.queue_empty_started = 12.0
+        self.plugin._start_keep_warm = mock.Mock()
+
+        with mock.patch.object(
+            thermalization_plugin.time, 'monotonic', return_value=20.0
+        ):
+            self.plugin._routine_pause_toggled(False)
+
+        self.assertAlmostEqual(self.plugin.history.mean, 0.25)
+        self.plugin._start_keep_warm.assert_called_once_with(20.0)
+
     def test_interruption_waits_for_manual_mode_then_starts_keep_warm(self):
         self.plugin.current_shot = {'path': 'interrupted.h5', 'ignore': False}
         self.plugin.history.append_seconds(1, 2)
