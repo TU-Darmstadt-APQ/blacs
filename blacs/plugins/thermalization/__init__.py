@@ -817,34 +817,119 @@ class ThermalizationTab(PluginTab):
     def initialise_GUI(self):
         self.plugin = None
         layout = self.get_tab_layout()
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+
+        header_layout = QtWidgets.QHBoxLayout()
+        header_layout.setSpacing(12)
+        title_layout = QtWidgets.QVBoxLayout()
+        title_layout.setSpacing(2)
+        title_label = QtWidgets.QLabel('Thermalization')
+        title_label.setStyleSheet('font-size: 20px; font-weight: bold;')
+        subtitle_label = QtWidgets.QLabel('NI TTL duty-cycle controller')
+        title_layout.addWidget(title_label)
+        title_layout.addWidget(subtitle_label)
+        header_layout.addLayout(title_layout)
+        header_layout.addStretch(1)
+
         self.state_label = QtWidgets.QLabel('Starting…')
+        self.state_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.state_label.setMinimumWidth(110)
+        header_layout.addWidget(self.state_label)
+        layout.addLayout(header_layout)
+
+        self.detail_label = QtWidgets.QLabel('Waiting for status…')
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setMinimumHeight(34)
+        layout.addWidget(self.detail_label)
+
+        duty_group = QtWidgets.QGroupBox('Duty cycle')
+        duty_layout = QtWidgets.QVBoxLayout(duty_group)
+        duty_layout.setContentsMargins(14, 14, 14, 14)
+        duty_layout.setSpacing(10)
+
+        mean_layout = QtWidgets.QHBoxLayout()
+        mean_caption = QtWidgets.QLabel('Rolling mean')
         self.mean_label = QtWidgets.QLabel('—')
+        self.mean_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        self.mean_label.setStyleSheet('font-size: 22px; font-weight: bold;')
+        mean_layout.addWidget(mean_caption)
+        mean_layout.addStretch(1)
+        mean_layout.addWidget(self.mean_label)
+        duty_layout.addLayout(mean_layout)
+
+        self.duty_bar = QtWidgets.QProgressBar()
+        self.duty_bar.setRange(0, 10000)
+        self.duty_bar.setValue(0)
+        self.duty_bar.setTextVisible(False)
+        self.duty_bar.setMinimumHeight(12)
+        duty_layout.addWidget(self.duty_bar)
+
         self.samples_label = QtWidgets.QLabel('0 / %d' % DUTY_HISTORY_SIZE)
         self.last_shot_label = QtWidgets.QLabel('—')
-        self.detail_label = QtWidgets.QLabel('')
-        self.detail_label.setWordWrap(True)
+        metrics_layout = QtWidgets.QFormLayout()
+        metrics_layout.setHorizontalSpacing(18)
+        metrics_layout.setVerticalSpacing(6)
+        metrics_layout.addRow('History samples:', self.samples_label)
+        metrics_layout.addRow('Last completed shot:', self.last_shot_label)
+        duty_layout.addLayout(metrics_layout)
+        layout.addWidget(duty_group)
+
         self.pause_button = QtWidgets.QPushButton('Pause')
         self.pause_button.setCheckable(True)
+        self.pause_button.setMinimumHeight(36)
+        self.pause_button.setMinimumWidth(120)
         self.pause_button.setToolTip(
             'Pause keep-warm switching and hold the thermal TTL at its current level'
         )
+        self.pause_button.setIcon(
+            self.pause_button.style().standardIcon(QtWidgets.QStyle.SP_MediaPause)
+        )
 
-        form = QtWidgets.QFormLayout()
-        form.addRow('Status:', self.state_label)
-        form.addRow('Mean duty cycle:', self.mean_label)
-        form.addRow('Samples:', self.samples_label)
-        form.addRow('Last shot:', self.last_shot_label)
-        form.addRow('Detail:', self.detail_label)
-        layout.addLayout(form)
-        layout.addWidget(self.pause_button)
+        controls_layout = QtWidgets.QHBoxLayout()
+        pause_hint = QtWidgets.QLabel(
+            'Pause holds the thermal TTL at its current level.'
+        )
+        pause_hint.setWordWrap(True)
+        controls_layout.addWidget(pause_hint, 1)
+        controls_layout.addWidget(self.pause_button)
+        layout.addLayout(controls_layout)
         layout.addStretch(1)
 
     def set_routine_paused(self, paused):
         self.pause_button.setText('Resume' if paused else 'Pause')
+        icon = (
+            QtWidgets.QStyle.SP_MediaPlay
+            if paused
+            else QtWidgets.QStyle.SP_MediaPause
+        )
+        self.pause_button.setIcon(self.pause_button.style().standardIcon(icon))
 
     def update_status(self, state, mean, count, last_shot, detail):
         self.state_label.setText(state)
+        status_colour = {
+            'Monitoring': '#2563a6',
+            'Shot running': '#6d4bb8',
+            'Keep-warm': '#258246',
+            'Paused': '#a16207',
+            'Error': '#b42318',
+        }.get(state, '#59636e')
+        self.state_label.setStyleSheet(
+            'QLabel {'
+            ' background-color: %s;'
+            ' color: white;'
+            ' border-radius: 10px;'
+            ' padding: 5px 12px;'
+            ' font-weight: bold;'
+            '}' % status_colour
+        )
         self.mean_label.setText('—' if mean is None else '%.2f%%' % (100.0 * mean))
+        self.duty_bar.setValue(0 if mean is None else int(round(10000.0 * mean)))
+        self.duty_bar.setToolTip(
+            'No recorded duty-cycle samples'
+            if mean is None
+            else 'Rolling mean: %.2f%%' % (100.0 * mean)
+        )
         self.samples_label.setText('%d / %d' % (count, DUTY_HISTORY_SIZE))
         self.last_shot_label.setText(
             '—' if last_shot is None else '%.2f%%' % (100.0 * last_shot)
